@@ -1,4 +1,3 @@
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
@@ -28,9 +27,9 @@ import {
  * - Таблица «Итоги» со средними по всем песням.
  *
  * ⚙️ Как запустить:
- * 1) Создайте проект в Firebase → включите Firestore (режим прод).
+ * 1) Создайте проект в Firebase → включите Firestore (режим теста на время тестов).
  * 2) Вставьте ваш конфиг в FIREBASE_CONFIG ниже.
- * 3) Задеплойте на Vercel/Netlify (или локально).
+ * 3) Задеплойте на Vercel/Netlify (или просто откройте локально через CRA/Vite).
  */
 
 // ⬇️ ВСТАВЬТЕ СВОЙ КОНФИГ FIREBASE
@@ -198,15 +197,17 @@ export default function App() {
     const myVoteRef = doc(db, "rooms", roomId, "songs", selectedSongId, "votes", myUid);
     const unsubMine = onSnapshot(myVoteRef, (s) => {
       const data = s.data();
-      if (data?.scores?.length) setMyScores(data.scores.map((n) => clamp(n)));
-      else setMyScores(Array(10).fill(5));
+      if (data && Array.isArray(data.scores) && data.scores.length) {
+        setMyScores(data.scores.map((n) => clamp(n)));
+      }
+      // если документа ещё нет — НЕ перезаписываем локальные значения
     });
 
     // Aggregate votes for this song
     const unsubAgg = onSnapshot(collection(db, "rooms", roomId, "songs", selectedSongId, "votes"), (qs) => {
       const votes = qs.docs.map((d) => d.data());
       const count = votes.length;
-      const perCritSum = Array(10).fill(0);
+      const perCritSum = Array(criteria.length).fill(0);
       votes.forEach((v) => v.scores?.forEach((x, i) => (perCritSum[i] += clamp(x))));
       const perCritAvg = perCritSum.map((s) => (count ? s / count : 0));
       const avgAll = perCritAvg.length ? perCritAvg.reduce((a, b) => a + b, 0) / perCritAvg.length : 0;
@@ -217,13 +218,15 @@ export default function App() {
       unsubMine?.();
       unsubAgg?.();
     };
-  }, [ready, roomId, selectedSongId]);
+  }, [ready, roomId, selectedSongId, criteria.length]);
 
-  // --- Auto-save my scores (debounced) ---
-  useEffect(() => {
+  // --- Submit vote on button ---
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState(null);
+  const submitVote = async () => {
     if (!ready || !roomId || !selectedSongId) return;
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
+    try {
+      setSaving(true);
       const db = dbRef.current;
       await setDoc(
         doc(db, "rooms", roomId, "songs", selectedSongId, "votes", myUid),
@@ -234,9 +237,11 @@ export default function App() {
         },
         { merge: true }
       );
-    }, 250);
-    return () => clearTimeout(saveTimer.current);
-  }, [myScores, ready, roomId, selectedSongId, displayName]);
+      setSavedAt(Date.now());
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // --- UI helpers ---
   const myAvg = useMemo(() => (myScores.length ? myScores.reduce((a, b) => a + b, 0) / myScores.length : 0), [myScores]);
@@ -355,9 +360,9 @@ export default function App() {
           {/* Middle: Sliders */}
           <div className="lg:col-span-2 space-y-6">
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Оценки: {songs.find((s) => s.id === selectedSongId)?.name || "—"}</h2>
-                <div className="text-xs text-neutral-600">Ваше среднее: <span className="font-semibold">{fmt2(myAvg)}</span></div>
+              <div className=\"mb-3\">
+                <h2 className=\"text-lg font-semibold\">Оценки: {songs.find((s) => s.id === selectedSongId)?.name || "—"}</h2>
+              </div>
               </div>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 {criteria.map((label, i) => (
@@ -366,6 +371,18 @@ export default function App() {
                       <span className="text-sm font-medium text-neutral-800">{label || `Критерий ${i + 1}`}</span>
                       <span className="rounded-lg bg-white px-2 py-0.5 text-xs font-semibold text-neutral-700">{myScores[i]}</span>
                     </div>
+            <div className=\"mt-4 flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between\">
+              <div className=\"text-sm text-neutral-700\">
+                Ваша средняя сейчас: <span className=\"font-semibold\">{fmt2(myAvg)}</span>
+              </div>
+              <button
+                onClick={submitVote}
+                disabled={!selectedSongId || saving}
+                className={`rounded-xl px-4 py-2 text-sm font-semibold text-white shadow-sm ${!selectedSongId || saving ? \"bg-neutral-400\" : \"bg-black hover:bg-neutral-800\"}`}
+              >
+                {saving ? \"Сохраняю…\" : \"Оценить\"}
+              </button>
+            </div>
                     <input
                       type="range"
                       min={1}
@@ -437,18 +454,19 @@ function Scoreboard({ db, roomId, criteria }) {
     const unsubSongs = onSnapshot(query(collection(db.current, "rooms", roomId, "songs"), orderBy("order", "asc")), async (qs) => {
       const list = qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
 
-      // For each song, listen its votes once (fan-out listeners)
+      // For each song, listen its votes once (fan-out listeners); to keep it simple in MVP,
+      // we'll aggregate via Promise.all and one-time get on each snapshot tick.
       const getOne = (song) =>
         new Promise((resolve) => {
           const unsub = onSnapshot(collection(db.current, "rooms", roomId, "songs", song.id, "votes"), (vs) => {
             const votes = vs.docs.map((d) => d.data());
             const count = votes.length;
             const perCritSum = Array(criteria.length).fill(0);
-            votes.forEach((v) => v.scores?.forEach((x, i) => (perCritSum[i] += Math.max(1, Math.min(10, Number(x))))));
+            votes.forEach((v) => v.scores?.forEach((x, i) => (perCritSum[i] += clamp(x))));
             const perCritAvg = perCritSum.map((s) => (count ? s / count : 0));
             const avgAll = perCritAvg.length ? perCritAvg.reduce((a, b) => a + b, 0) / perCritAvg.length : 0;
             resolve({ id: song.id, name: song.name, count, avgAll, perCritAvg });
-            unsub(); // one-shot per outer tick
+            unsub(); // we only need a snapshot of current values to populate list; table refreshes via outer onSnapshot
           });
         });
 
