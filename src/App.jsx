@@ -24,7 +24,7 @@ import {
  * - Рилтайм средние по песне и таблица всех песен
  */
 
-// ⬇ твой конфиг (оставляю как ты прислал)
+// ⬇ твой конфиг Firebase
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyCIxmkUlXPoBdIZEogYNmL9ZC53lRegAAs",
   authDomain: "interhuy-6f374.firebaseapp.com",
@@ -64,38 +64,38 @@ export default function App() {
   const dbRef = useRef(null);
   const [ready, setReady] = useState(false);
 
-  // gate
+  // экран входа
   const [roomId, setRoomId] = useState(() => localStorage.getItem("songRater.roomId") || "");
   const [displayName, setDisplayName] = useState(() => localStorage.getItem("songRater.name") || "");
   const [step, setStep] = useState("gate"); // gate | lobby
   const myUid = uid();
 
-  // room state
+  // состояние комнаты
   const [criteria, setCriteria] = useState(DEFAULT_CRITERIA);
   const [songs, setSongs] = useState([]); // {id,name,order}
   const [activeSongId, setActiveSongId] = useState(null);
   const [participants, setParticipants] = useState([]);
 
-  // UI state
+  // UI
   const [newSong, setNewSong] = useState("");
   const [selectedSongId, setSelectedSongId] = useState(null);
 
-  // my sliders (локально, без автосейва)
+  // мои локальные оценки
   const [myScores, setMyScores] = useState(() => Array(10).fill(5));
 
-  // aggregates for selected song
+  // агрегаты по выбранной песне
   const [agg, setAgg] = useState({ count: 0, avgAll: 0, perCritAvg: Array(10).fill(0) });
 
-  // submit button state
+  // кнопка «Оценить»
   const [saving, setSaving] = useState(false);
 
-  // boot
+  // инициализация
   useEffect(() => {
     dbRef.current = initFirebase();
     setReady(true);
   }, []);
 
-  // join room
+  // создание комнаты и подписки
   const createRoomIfMissing = async (db, rid, name) => {
     const rDoc = doc(db, "rooms", rid);
     const snap = await getDoc(rDoc);
@@ -151,14 +151,12 @@ export default function App() {
     };
   };
 
-  // активная песня
   const setRoomActiveSong = async (sid) => {
     if (!sid) return;
     await updateDoc(doc(dbRef.current, "rooms", roomId), { activeSongId: sid });
     setSelectedSongId(sid);
   };
 
-  // добавить песню
   const addSong = async () => {
     const name = newSong.trim();
     if (!name) return;
@@ -173,20 +171,20 @@ export default function App() {
     await setRoomActiveSong(res.id);
   };
 
-  // слушаем МОИ сохранённые голоса (для текущей песни), но НЕ сбрасываем локальные,
-  // если документа ещё нет — это и ломало ползунок
+  // подписка на МОИ сохранённые оценки и агрегаты по песне
   useEffect(() => {
     if (!ready || !roomId || !selectedSongId) return;
+
+    // мои сохранённые оценки (не сбрасываем локальные, если документа ещё нет)
     const myVoteRef = doc(dbRef.current, "rooms", roomId, "songs", selectedSongId, "votes", myUid);
     const unsubMine = onSnapshot(myVoteRef, (s) => {
       const data = s.data();
       if (data && Array.isArray(data.scores) && data.scores.length) {
         setMyScores(data.scores.map((n) => clamp(n)));
       }
-      // если документа нет — никаких сбросов на 5
     });
 
-    // агрегаты по песне
+    // агрегаты для выбранной песни
     const unsubAgg = onSnapshot(
       collection(dbRef.current, "rooms", roomId, "songs", selectedSongId, "votes"),
       (qs) => {
@@ -208,7 +206,7 @@ export default function App() {
     };
   }, [ready, roomId, selectedSongId]);
 
-  // отправка голоса только по кнопке
+  // сохранить голос только по кнопке
   const submitVote = async () => {
     if (!ready || !roomId || !selectedSongId) return;
     try {
@@ -440,12 +438,42 @@ export default function App() {
               </div>
             </div>
 
-            function Scoreboard({ db, roomId, criteria }) {
-  const [rows, setRows] = useState([]);
-  const votesUnsubsRef = useRef({}); // храним подписки на /votes
+            <Scoreboard db={dbRef} roomId={roomId} criteria={criteria} />
+          </div>
+        </div>
 
+        <footer className="mt-6 text-center text-xs text-neutral-400">
+          Realtime на Firestore · Данные общие для всех в комнате
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value }) {
+  return (
+    <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-3">
+      <div className="text-xs text-neutral-500">{label}</div>
+      <div className="text-xl font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function randomRoomCode() {
+  const adj = ["loud", "epic", "fresh", "brave", "lucky", "gold", "neon", "vivid"];
+  const noun = ["eurovision", "contest", "party", "song", "final", "semifinal"];
+  return `${adj[Math.floor(Math.random() * adj.length)]}-${noun[Math.floor(Math.random() * noun.length)]}-${Math.floor(
+    Math.random() * 1000
+  )}`;
+}
+
+/** Таблица итогов — настоящий realtime по голосам каждой песни */
+function Scoreboard({ db, roomId, criteria }) {
+  const [rows, setRows] = useState([]);
+  const votesUnsubsRef = useRef({}); // запоминаем подписки на /votes для каждого songId
+
+  // смена комнаты — чистим все подписки на голоса
   useEffect(() => {
-    // чистим все подписки на голоса при смене комнаты
     return () => {
       Object.values(votesUnsubsRef.current).forEach((unsub) => unsub && unsub());
       votesUnsubsRef.current = {};
@@ -461,9 +489,9 @@ export default function App() {
       (qs) => {
         const songs = qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
 
-        // 2) на каждую песню ставим /votes подписку (если не стоит)
+        // 2) для каждой песни — подписка на её голоса (если ещё нет)
         songs.forEach((song) => {
-          if (votesUnsubsRef.current[song.id]) return; // уже подписаны
+          if (votesUnsubsRef.current[song.id]) return;
 
           const unsubVotes = onSnapshot(
             collection(db.current, "rooms", roomId, "songs", song.id, "votes"),
@@ -475,11 +503,8 @@ export default function App() {
                 v.scores?.forEach((x, i) => (perCritSum[i] += Math.max(1, Math.min(10, Number(x)))))
               );
               const perCritAvg = perCritSum.map((s) => (count ? s / count : 0));
-              const avgAll = perCritAvg.length
-                ? perCritAvg.reduce((a, b) => a + b, 0) / perCritAvg.length
-                : 0;
+              const avgAll = perCritAvg.length ? perCritAvg.reduce((a, b) => a + b, 0) / perCritAvg.length : 0;
 
-              // 3) обновляем/вставляем строку для этой песни
               setRows((prev) => {
                 const idx = prev.findIndex((r) => r.id === song.id);
                 const nextRow = { id: song.id, name: song.name, count, avgAll, perCritAvg };
@@ -494,7 +519,7 @@ export default function App() {
           votesUnsubsRef.current[song.id] = unsubVotes;
         });
 
-        // 4) удаляем подписки на песни, которые исчезли
+        // 3) удаляем лишние подписки, если песню удалили
         const existingIds = new Set(songs.map((s) => s.id));
         Object.entries(votesUnsubsRef.current).forEach(([songId, unsub]) => {
           if (!existingIds.has(songId)) {
@@ -555,4 +580,3 @@ export default function App() {
     </div>
   );
 }
-
