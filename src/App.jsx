@@ -16,13 +16,11 @@ import {
 
 /**
  * 🎶 Song Contest Rater — Realtime (Firebase)
- * - Комнаты по коду, участники по имени
- * - 10 критериев, слайдеры 1–10, кнопка «Оценить»
- * - Редактируемые названия критериев
- * - Сводка по участнику: Песня → СРЕДНЯЯ (чёрная пилюля) → оценки по критериям → сумма
- * - Топ-10 по средней (пилюля)
- * - Итоги по всем песням: средняя (пилюля) + средние по критериям
- * - Все средние округляются до десятых
+ * Mobile-first адаптация:
+ * - Нижняя фикс-панель на телефоне: средняя (пилюля) + «Оценить»
+ * - Сводка по участнику: карточки на мобильном, таблица на десктопе
+ * - Итоги по всем песням: список на мобильном, таблица на десктопе
+ * - Везде средние в чёрной «пилюле», округление до десятых
  */
 
 const FIREBASE_CONFIG = {
@@ -350,7 +348,7 @@ export default function App() {
             <div>
               <label className="mb-1 block text-xs text-neutral-500">Ваше имя</label>
               <input
-                className="w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none ring-neutral-400 focus:ring"
+                className="w-full rounded-xl border border-neutral-300 px-3 py-3 text-sm outline-none ring-neutral-400 focus:ring"
                 placeholder="Например: Сергей"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
@@ -361,14 +359,14 @@ export default function App() {
               <div className="sm:col-span-2">
                 <label className="mb-1 block text-xs text-neutral-500">Код комнаты</label>
                 <input
-                  className="w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none ring-neutral-400 focus:ring"
+                  className="w-full rounded-xl border border-neutral-300 px-3 py-3 text-sm outline-none ring-neutral-400 focus:ring"
                   placeholder="eurovision-2025"
                   value={roomId}
                   onChange={(e) => setRoomId(e.target.value.toLowerCase())}
                 />
               </div>
               <div className="flex items-end">
-                <button className="w-full rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:bg-neutral-800">
+                <button className="w-full rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white hover:bg-neutral-800">
                   Войти / Создать
                 </button>
               </div>
@@ -380,16 +378,16 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-neutral-50 text-neutral-900">
-      <div className="mx-auto max-w-7xl px-4 py-6">
+    <div className="min-h-screen bg-neutral-50 text-neutral-900 pb-24 sm:pb-0">
+      <div className="mx-auto max-w-7xl px-3 sm:px-4 py-4 sm:py-6">
         {/* top bar */}
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Комната</div>
+            <div className="text-[10px] uppercase tracking-wide text-neutral-500">Комната</div>
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold">{roomId}</h1>
+              <h1 className="text-xl sm:text-2xl font-bold">{roomId}</h1>
               {activeSong && (
-                <span className="rounded-lg bg-black px-2 py-1 text-xs font-semibold text-white">
+                <span className="rounded-lg bg-black px-2 py-1 text-[10px] sm:text-xs font-semibold text-white">
                   Сейчас: {activeSong.name}
                 </span>
               )}
@@ -415,9 +413,9 @@ export default function App() {
           </div>
         </div>
 
-        <div className="grid gap-6 xl:grid-cols-3">
+        <div className="grid gap-4 sm:gap-6 xl:grid-cols-3">
           {/* ЛЕВАЯ КОЛОНКА */}
-          <div className="space-y-6">
+          <div className="space-y-4 sm:space-y-6">
             {/* Песни */}
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
               <div className="mb-2 flex items-center justify-between">
@@ -425,19 +423,19 @@ export default function App() {
               </div>
               <div className="mb-3 flex gap-2">
                 <input
-                  className="flex-1 rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none ring-neutral-400 focus:ring"
+                  className="flex-1 rounded-xl border border-neutral-300 px-3 py-3 text-sm outline-none ring-neutral-400 focus:ring"
                   placeholder="Страна — Артист — Трек"
                   value={newSong}
                   onChange={(e) => setNewSong(e.target.value)}
                 />
                 <button
                   onClick={addSong}
-                  className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:bg-neutral-800"
+                  className="rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white hover:bg-neutral-800"
                 >
                   Добавить
                 </button>
               </div>
-              <div className="max-h-72 space-y-1 overflow-auto pr-1">
+              <div className="max-h-72 sm:max-h-80 space-y-1 overflow-auto pr-1 -mr-1">
                 {songs.map((s) => (
                   <div
                     key={s.id}
@@ -453,7 +451,7 @@ export default function App() {
                         onClick={() => setRoomActiveSong(s.id)}
                         className="rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs hover:bg-neutral-100"
                       >
-                        Сделать активной
+                        Активная
                       </button>
                     </div>
                   </div>
@@ -488,7 +486,38 @@ export default function App() {
                 {participants.length === 0 && <span className="text-xs text-neutral-500">Ещё никто не зашёл</span>}
               </div>
 
-              <div className="overflow-x-auto">
+              {/* Мобайл-версия: карточки */}
+              <div className="sm:hidden space-y-2">
+                {[...participantRows]
+                  .sort((a, b) => (b.sum || 0) - (a.sum || 0))
+                  .map((r) => (
+                    <div key={r.songId} className="rounded-xl border border-neutral-200 bg-white p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-medium text-sm">{r.songName}</div>
+                        <Pill>{fmt1(r.avg || 0)}</Pill>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                        {criteria.map((c, i) => (
+                          <div key={i} className="flex items-center justify-between gap-2">
+                            <span className="text-neutral-500 truncate">{c}</span>
+                            <span className="font-medium">{r.scores[i] != null ? r.scores[i] : "—"}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2 text-[11px] text-neutral-500">
+                        Сумма: <span className="font-semibold text-neutral-700">{r.sum || 0}</span>
+                      </div>
+                    </div>
+                  ))}
+                {participantRows.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
+                    Нет данных
+                  </div>
+                )}
+              </div>
+
+              {/* Десктоп-таблица */}
+              <div className="hidden sm:block overflow-x-auto">
                 <table className="min-w-full divide-y divide-neutral-200">
                   <thead>
                     <tr className="text-xs text-neutral-600">
@@ -521,7 +550,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Топ-10 по средней оценке */}
+            {/* Топ-10 по средней оценке (он и так мобайл-дружественный) */}
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
               <h2 className="mb-3 text-lg font-semibold">Топ-10 (средняя оценка)</h2>
               {topRows.length === 0 ? (
@@ -545,14 +574,14 @@ export default function App() {
           </div>
 
           {/* ПРАВАЯ ЧАСТЬ: слайдеры + итоги */}
-          <div className="xl:col-span-2 space-y-6">
+          <div className="xl:col-span-2 space-y-4 sm:space-y-6">
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
               <div className="mb-3">
                 <h2 className="text-lg font-semibold">
                   Оценки: {songs.find((s) => s.id === selectedSongId)?.name || "—"}
                 </h2>
               </div>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:gap-4 sm:grid-cols-2">
                 {criteria.map((label, i) => (
                   <div key={i} className="rounded-xl border border-neutral-200 bg-neutral-50 p-3">
                     <div className="mb-1 flex items-center justify-between">
@@ -570,7 +599,7 @@ export default function App() {
                       onChange={(e) =>
                         setMyScores((prev) => prev.map((v, idx) => (idx === i ? clamp(e.target.value) : v)))
                       }
-                      className="h-2 w-full cursor-pointer appearance-none rounded-full bg-neutral-200 accent-black"
+                      className="h-3 w-full cursor-pointer appearance-none rounded-full bg-neutral-200 accent-black"
                       disabled={!selectedSongId}
                     />
                     <div className="mt-1 flex justify-between text-[10px] text-neutral-500">
@@ -581,7 +610,8 @@ export default function App() {
                 ))}
               </div>
 
-              <div className="mt-4 flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
+              {/* Верхняя панель действий (desktop) */}
+              <div className="mt-4 hidden sm:flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm text-neutral-700 flex items-center gap-2">
                   <span>Ваша средняя сейчас:</span>
                   <Pill>{fmt1(myAvg)}</Pill>
@@ -631,7 +661,7 @@ export default function App() {
                   <div key={i} className="space-y-1">
                     <div className="text-xs text-neutral-500">Критерий {i + 1}</div>
                     <input
-                      className="w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none ring-neutral-400 focus:ring"
+                      className="w-full rounded-xl border border-neutral-300 px-3 py-3 text-sm outline-none ring-neutral-400 focus:ring"
                       value={val}
                       onChange={(e) =>
                         setCriteriaDraft((prev) => prev.map((x, idx) => (idx === i ? e.target.value : x)))
@@ -668,6 +698,25 @@ export default function App() {
         <footer className="mt-6 text-center text-xs text-neutral-400">
           Realtime на Firestore · Данные общие для всех в комнате
         </footer>
+      </div>
+
+      {/* 📌 Мобильная нижняя панель действий */}
+      <div className="sm:hidden fixed inset-x-0 bottom-0 z-40 border-t border-neutral-200 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/70">
+        <div className="mx-auto max-w-7xl px-3 py-3 flex items-center justify-between gap-3">
+          <div className="text-sm text-neutral-700 flex items-center gap-2">
+            <span>Средняя:</span>
+            <Pill>{fmt1(myAvg)}</Pill>
+          </div>
+          <button
+            onClick={submitVote}
+            disabled={!selectedSongId || saving}
+            className={`rounded-xl px-4 py-2 text-sm font-semibold text-white shadow-sm ${
+              !selectedSongId || saving ? "bg-neutral-400" : "bg-black hover:bg-neutral-800"
+            }`}
+          >
+            {saving ? "Сохраняю…" : "Оценить"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -754,46 +803,65 @@ function Scoreboard({ db, roomId, criteria }) {
     };
   }, [db, roomId, criteria.length]);
 
+  // Мобайл: список, Десктоп: таблица
   return (
     <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-lg font-semibold">Итоги по всем песням (realtime)</h3>
       </div>
+
       {rows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
           Пока нет данных
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-neutral-200">
-            <thead className="bg-neutral-50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">#</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">Песня</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">Голосов</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">Средняя</th>
-                {criteria.map((c, i) => (
-                  <th key={i} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">
-                    {c}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-100">
-              {[...rows].sort((a, b) => b.avgAll - a.avgAll).map((r, idx) => (
-                <tr key={r.id} className="hover:bg-neutral-50">
-                  <td className="px-4 py-2 text-sm text-neutral-500">{idx + 1}</td>
-                  <td className="px-4 py-2 text-sm font-medium text-neutral-900">{r.name}</td>
-                  <td className="px-4 py-2 text-sm">{r.count}</td>
-                  <td className="px-4 py-2 text-sm font-semibold"><Pill>{fmt1(r.avgAll)}</Pill></td>
-                  {r.perCritAvg.map((x, i) => (
-                    <td key={i} className="px-4 py-2 text-sm">{fmt1(x)}</td>
+        <>
+          {/* Мобайл-список */}
+          <div className="sm:hidden space-y-2">
+            {[...rows].sort((a, b) => b.avgAll - a.avgAll).map((r, idx) => (
+              <div key={r.id} className="flex items-center justify-between rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2">
+                <div className="min-w-0">
+                  <div className="text-[11px] text-neutral-500">{idx + 1} место</div>
+                  <div className="font-medium text-sm truncate">{r.name}</div>
+                  <div className="text-[11px] text-neutral-500">Голосов: {r.count}</div>
+                </div>
+                <Pill>{fmt1(r.avgAll)}</Pill>
+              </div>
+            ))}
+          </div>
+
+          {/* Десктоп-таблица */}
+          <div className="hidden sm:block overflow-x-auto">
+            <table className="min-w-full divide-y divide-neutral-200">
+              <thead className="bg-neutral-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">#</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">Песня</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">Голосов</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">Средняя</th>
+                  {criteria.map((c, i) => (
+                    <th key={i} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">
+                      {c}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-neutral-100">
+                {[...rows].sort((a, b) => b.avgAll - a.avgAll).map((r, idx) => (
+                  <tr key={r.id} className="hover:bg-neutral-50">
+                    <td className="px-4 py-2 text-sm text-neutral-500">{idx + 1}</td>
+                    <td className="px-4 py-2 text-sm font-medium text-neutral-900">{r.name}</td>
+                    <td className="px-4 py-2 text-sm">{r.count}</td>
+                    <td className="px-4 py-2 text-sm font-semibold"><Pill>{fmt1(r.avgAll)}</Pill></td>
+                    {r.perCritAvg.map((x, i) => (
+                      <td key={i} className="px-4 py-2 text-sm">{fmt1(x)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
