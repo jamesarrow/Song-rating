@@ -440,48 +440,34 @@ export default function App() {
               </div>
             </div>
 
-            <Scoreboard db={dbRef} roomId={roomId} criteria={criteria} />
-          </div>
-        </div>
-
-        <footer className="mt-6 text-center text-xs text-neutral-400">
-          Realtime на Firestore · Данные общие для всех в комнате
-        </footer>
-      </div>
-    </div>
-  );
-}
-
-function Stat({ label, value }) {
-  return (
-    <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-3">
-      <div className="text-xs text-neutral-500">{label}</div>
-      <div className="text-xl font-semibold">{value}</div>
-    </div>
-  );
-}
-
-function randomRoomCode() {
-  const adj = ["loud", "epic", "fresh", "brave", "lucky", "gold", "neon", "vivid"];
-  const noun = ["eurovision", "contest", "party", "song", "final", "semifinal"];
-  return `${adj[Math.floor(Math.random() * adj.length)]}-${noun[Math.floor(Math.random() * noun.length)]}-${Math.floor(
-    Math.random() * 1000
-  )}`;
-}
-
-function Scoreboard({ db, roomId, criteria }) {
+            function Scoreboard({ db, roomId, criteria }) {
   const [rows, setRows] = useState([]);
+  const votesUnsubsRef = useRef({}); // храним подписки на /votes
+
+  useEffect(() => {
+    // чистим все подписки на голоса при смене комнаты
+    return () => {
+      Object.values(votesUnsubsRef.current).forEach((unsub) => unsub && unsub());
+      votesUnsubsRef.current = {};
+    };
+  }, [roomId]);
 
   useEffect(() => {
     if (!db.current || !roomId) return;
+
+    // 1) слушаем список песен
     const unsubSongs = onSnapshot(
       query(collection(db.current, "rooms", roomId, "songs"), orderBy("order", "asc")),
-      async (qs) => {
-        const list = qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+      (qs) => {
+        const songs = qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
 
-        const getOne = (song) =>
-          new Promise((resolve) => {
-            const unsub = onSnapshot(collection(db.current, "rooms", roomId, "songs", song.id, "votes"), (vs) => {
+        // 2) на каждую песню ставим /votes подписку (если не стоит)
+        songs.forEach((song) => {
+          if (votesUnsubsRef.current[song.id]) return; // уже подписаны
+
+          const unsubVotes = onSnapshot(
+            collection(db.current, "rooms", roomId, "songs", song.id, "votes"),
+            (vs) => {
               const votes = vs.docs.map((d) => d.data());
               const count = votes.length;
               const perCritSum = Array(criteria.length).fill(0);
@@ -489,17 +475,40 @@ function Scoreboard({ db, roomId, criteria }) {
                 v.scores?.forEach((x, i) => (perCritSum[i] += Math.max(1, Math.min(10, Number(x)))))
               );
               const perCritAvg = perCritSum.map((s) => (count ? s / count : 0));
-              const avgAll = perCritAvg.length ? perCritAvg.reduce((a, b) => a + b, 0) / perCritAvg.length : 0;
-              resolve({ id: song.id, name: song.name, count, avgAll, perCritAvg });
-              unsub(); // one-shot на апдейт
-            });
-          });
+              const avgAll = perCritAvg.length
+                ? perCritAvg.reduce((a, b) => a + b, 0) / perCritAvg.length
+                : 0;
 
-        const data = await Promise.all(list.map(getOne));
-        setRows(data);
+              // 3) обновляем/вставляем строку для этой песни
+              setRows((prev) => {
+                const idx = prev.findIndex((r) => r.id === song.id);
+                const nextRow = { id: song.id, name: song.name, count, avgAll, perCritAvg };
+                if (idx === -1) return [...prev, nextRow];
+                const next = [...prev];
+                next[idx] = nextRow;
+                return next;
+              });
+            }
+          );
+
+          votesUnsubsRef.current[song.id] = unsubVotes;
+        });
+
+        // 4) удаляем подписки на песни, которые исчезли
+        const existingIds = new Set(songs.map((s) => s.id));
+        Object.entries(votesUnsubsRef.current).forEach(([songId, unsub]) => {
+          if (!existingIds.has(songId)) {
+            unsub && unsub();
+            delete votesUnsubsRef.current[songId];
+            setRows((prev) => prev.filter((r) => r.id !== songId));
+          }
+        });
       }
     );
-    return () => unsubSongs?.();
+
+    return () => {
+      unsubSongs?.();
+    };
   }, [db, roomId, criteria.length]);
 
   return (
@@ -517,20 +526,11 @@ function Scoreboard({ db, roomId, criteria }) {
             <thead className="bg-neutral-50">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">#</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">
-                  Песня
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">
-                  Голосов
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">
-                  Средняя
-                </th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">Песня</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">Голосов</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">Средняя</th>
                 {criteria.map((c, i) => (
-                  <th
-                    key={i}
-                    className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600"
-                  >
+                  <th key={i} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-600">
                     {c}
                   </th>
                 ))}
@@ -544,9 +544,7 @@ function Scoreboard({ db, roomId, criteria }) {
                   <td className="px-4 py-2 text-sm">{r.count}</td>
                   <td className="px-4 py-2 text-sm font-semibold">{fmt2(r.avgAll)}</td>
                   {r.perCritAvg.map((x, i) => (
-                    <td key={i} className="px-4 py-2 text-sm">
-                      {fmt2(x)}
-                    </td>
+                    <td key={i} className="px-4 py-2 text-sm">{fmt2(x)}</td>
                   ))}
                 </tr>
               ))}
@@ -557,3 +555,4 @@ function Scoreboard({ db, roomId, criteria }) {
     </div>
   );
 }
+
