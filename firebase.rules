@@ -1,0 +1,52 @@
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /rooms/{roomId} {
+      allow read: if true;
+
+      allow create: if
+        request.resource.data.keys().hasOnly(['createdAt','criteria','activeSongId']) &&
+        request.resource.data.criteria is list &&
+        request.resource.data.criteria.size() == 10;
+
+      allow update: if
+        request.resource.data.activeSongId is string &&
+        request.resource.data.criteria == resource.data.criteria;
+
+      match /participants/{pid} {
+        allow read: if true;
+        allow write: if
+          request.resource.data.keys().hasOnly(['name','updatedAt']) &&
+          request.resource.data.name is string &&
+          request.resource.data.name.size() > 0 &&
+          request.resource.data.name.size() <= 40 &&
+          request.resource.data.updatedAt is timestamp;
+      }
+
+      match /songs/{songId} {
+        allow read: if true;
+
+        allow create: if
+          request.resource.data.keys().hasOnly(['name','order','createdAt']) &&
+          request.resource.data.name is string &&
+          request.resource.data.order is number &&
+          request.resource.data.createdAt is timestamp;
+
+        match /votes/{voteId} {
+          allow read: if true;
+          allow write: if
+            request.resource.data.keys().hasOnly(['scores','name','updatedAt']) &&
+            request.resource.data.name is string &&
+            request.resource.data.name.size() > 0 &&
+            request.resource.data.name.size() <= 40 &&
+            request.resource.data.updatedAt is timestamp &&
+            request.resource.data.scores is list &&
+            request.resource.data.scores.size() == 10 &&
+            request.resource.data.scores.where(s, (s is int || s is number) && s >= 1 && s <= 10).size() == 10;
+        }
+      }
+    }
+  }
+}
