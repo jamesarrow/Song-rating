@@ -16,15 +16,12 @@ import {
 
 /**
  * 🎶 Song Contest Rater — Realtime
- * - Комнаты по коду
- * - Участники по имени
- * - Песни + «Сейчас играет»
- * - Слайдеры 1–10 по 10 критериям
- * - Кнопка «Оценить» сохраняет голос (нет автосейва)
- * - Рилтайм средние по песне и таблица всех песен
+ * + Кнопка «Оценить»
+ * + Редактируемые критерии (10 названий)
+ * + Сводка по участнику (какие оценки поставил всем песням)
+ * + Топ-10 песен по сумме всех оценок всех участников
  */
 
-// ⬇ твой конфиг Firebase
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyCIxmkUlXPoBdIZEogYNmL9ZC53lRegAAs",
   authDomain: "interhuy-6f374.firebaseapp.com",
@@ -64,10 +61,10 @@ export default function App() {
   const dbRef = useRef(null);
   const [ready, setReady] = useState(false);
 
-  // экран входа
+  // вход
   const [roomId, setRoomId] = useState(() => localStorage.getItem("songRater.roomId") || "");
   const [displayName, setDisplayName] = useState(() => localStorage.getItem("songRater.name") || "");
-  const [step, setStep] = useState("gate"); // gate | lobby
+  const [step, setStep] = useState("gate");
   const myUid = uid();
 
   // состояние комнаты
@@ -79,23 +76,28 @@ export default function App() {
   // UI
   const [newSong, setNewSong] = useState("");
   const [selectedSongId, setSelectedSongId] = useState(null);
+  const [editingCriteria, setEditingCriteria] = useState(false);
+  const [criteriaDraft, setCriteriaDraft] = useState(DEFAULT_CRITERIA);
 
-  // мои локальные оценки
+  // мои оценки (локально)
   const [myScores, setMyScores] = useState(() => Array(10).fill(5));
+  const [saving, setSaving] = useState(false);
 
   // агрегаты по выбранной песне
   const [agg, setAgg] = useState({ count: 0, avgAll: 0, perCritAvg: Array(10).fill(0) });
 
-  // кнопка «Оценить»
-  const [saving, setSaving] = useState(false);
+  // сводка по участнику
+  const [selectedParticipantId, setSelectedParticipantId] = useState("");
+  const [participantRows, setParticipantRows] = useState([]); // {songName, scores[], avg, sum}
 
-  // инициализация
+  // топ 10
+  const [topRows, setTopRows] = useState([]); // {id,name,totalSum}
+
   useEffect(() => {
     dbRef.current = initFirebase();
     setReady(true);
   }, []);
 
-  // создание комнаты и подписки
   const createRoomIfMissing = async (db, rid, name) => {
     const rDoc = doc(db, "rooms", rid);
     const snap = await getDoc(rDoc);
@@ -124,21 +126,63 @@ export default function App() {
 
     const unsubRoom = onSnapshot(doc(db, "rooms", rid), (s) => {
       const data = s.data();
-      setCriteria(data?.criteria || DEFAULT_CRITERIA);
+      const nextCriteria = (data?.criteria && Array.isArray(data.criteria) && data.criteria.length === 10)
+        ? data.criteria
+        : DEFAULT_CRITERIA;
+      setCriteria(nextCriteria);
+      setCriteriaDraft(nextCriteria);
       setActiveSongId(data?.activeSongId || null);
+      // подгоняем длину моих ползунков под 10
+      setMyScores((prev) => {
+        const arr = Array(10).fill(5);
+        for (let i = 0; i < 10; i++) arr[i] = clamp(prev[i] ?? 5);
+        return arr;
+      });
     });
 
     const unsubParts = onSnapshot(collection(db, "rooms", rid, "participants"), (qs) => {
-      setParticipants(qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) })));
+      const list = qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+      setParticipants(list);
+      if (!selectedParticipantId && list.length) {
+        setSelectedParticipantId(list[0].id);
+      }
     });
 
-    const unsubSongs = onSnapshot(
+    const unsubSongs = onSnapshot(query(collection(db, "rooms", rid, "songs"), orderBy("order", "asc")), (qs) => {
+      const list = qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+      setSongs(list);
+      const prefer = list.find((s) => s.id === (activeSongId || "")) || list[0];
+      setSelectedSongId((prev) => prev || prefer?.id || null);
+    });
+
+    // слушаем Топ (по всем песням, по всем голосам)
+    const unsubSongsForTop = onSnapshot(
       query(collection(db, "rooms", rid, "songs"), orderBy("order", "asc")),
       (qs) => {
         const list = qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
-        setSongs(list);
-        const prefer = list.find((s) => s.id === (activeSongId || "")) || list[0];
-        setSelectedSongId((prev) => prev || prefer?.id || null);
+        // на каждую песню — подписка на её голоса и пересчёт totalSum
+        const unsubs = [];
+        list.forEach((song) => {
+          const u = onSnapshot(collection(db, "rooms", rid, "songs", song.id, "votes"), (vs) => {
+            const votes = vs.docs.map((d) => d.data());
+            const totalSum = votes.reduce((acc, v) => {
+              if (!Array.isArray(v.scores)) return acc;
+              const s = v.scores.reduce((a, b) => a + clamp(b), 0); // 10..100
+              return acc + s;
+            }, 0);
+            setTopRows((prev) => {
+              const idx = prev.findIndex((r) => r.id === song.id);
+              const nextRow = { id: song.id, name: song.name, totalSum };
+              if (idx === -1) return [...prev, nextRow];
+              const cp = [...prev];
+              cp[idx] = nextRow;
+              return cp;
+            });
+          });
+          unsubs.push(u);
+        });
+        // очищать будем при смене комнаты/размонтировании
+        return () => unsubs.forEach((u) => u && u());
       }
     );
 
@@ -148,6 +192,7 @@ export default function App() {
       unsubRoom?.();
       unsubParts?.();
       unsubSongs?.();
+      unsubSongsForTop?.();
     };
   };
 
@@ -171,20 +216,22 @@ export default function App() {
     await setRoomActiveSong(res.id);
   };
 
-  // подписка на МОИ сохранённые оценки и агрегаты по песне
+  // мои сохранённые оценки и агрегаты по выбранной песне
   useEffect(() => {
     if (!ready || !roomId || !selectedSongId) return;
 
-    // мои сохранённые оценки (не сбрасываем локальные, если документа ещё нет)
     const myVoteRef = doc(dbRef.current, "rooms", roomId, "songs", selectedSongId, "votes", myUid);
     const unsubMine = onSnapshot(myVoteRef, (s) => {
       const data = s.data();
       if (data && Array.isArray(data.scores) && data.scores.length) {
-        setMyScores(data.scores.map((n) => clamp(n)));
+        setMyScores(() => {
+          const arr = Array(10).fill(5);
+          for (let i = 0; i < 10; i++) arr[i] = clamp(data.scores[i] ?? 5);
+          return arr;
+        });
       }
     });
 
-    // агрегаты для выбранной песни
     const unsubAgg = onSnapshot(
       collection(dbRef.current, "rooms", roomId, "songs", selectedSongId, "votes"),
       (qs) => {
@@ -193,9 +240,7 @@ export default function App() {
         const perCritSum = Array(10).fill(0);
         votes.forEach((v) => v.scores?.forEach((x, i) => (perCritSum[i] += clamp(x))));
         const perCritAvg = perCritSum.map((s) => (count ? s / count : 0));
-        const avgAll = perCritAvg.length
-          ? perCritAvg.reduce((a, b) => a + b, 0) / perCritAvg.length
-          : 0;
+        const avgAll = perCritAvg.length ? perCritAvg.reduce((a, b) => a + b, 0) / perCritAvg.length : 0;
         setAgg({ count, perCritAvg, avgAll });
       }
     );
@@ -206,7 +251,37 @@ export default function App() {
     };
   }, [ready, roomId, selectedSongId]);
 
-  // сохранить голос только по кнопке
+  // сводка выбранного участника: для каждой песни берём doc votes/<participantId>
+  useEffect(() => {
+    if (!ready || !roomId || !selectedParticipantId || !songs.length) {
+      setParticipantRows([]);
+      return;
+    }
+    const unsubs = songs.map((song) =>
+      onSnapshot(doc(dbRef.current, "rooms", roomId, "songs", song.id, "votes", selectedParticipantId), (s) => {
+        const data = s.data();
+        let scores = Array(10).fill(null);
+        if (data && Array.isArray(data.scores)) {
+          scores = Array(10).fill(null).map((_, i) => (data.scores[i] != null ? clamp(data.scores[i]) : null));
+        }
+        const avg =
+          scores.filter((x) => x != null).length > 0
+            ? scores.reduce((a, b) => a + (b || 0), 0) / scores.filter((x) => x != null).length
+            : 0;
+        const sum = scores.reduce((a, b) => a + (b || 0), 0);
+        setParticipantRows((prev) => {
+          const idx = prev.findIndex((r) => r.songId === song.id);
+          const next = { songId: song.id, songName: song.name, scores, avg, sum };
+          if (idx === -1) return [...prev, next];
+          const cp = [...prev];
+          cp[idx] = next;
+          return cp;
+        });
+      })
+    );
+    return () => unsubs.forEach((u) => u && u());
+  }, [ready, roomId, selectedParticipantId, songs]);
+
   const submitVote = async () => {
     if (!ready || !roomId || !selectedSongId) return;
     try {
@@ -225,6 +300,17 @@ export default function App() {
     }
   };
 
+  const saveCriteria = async () => {
+    // только переименовываем — всегда 10 пунктов
+    const cleaned = criteriaDraft.map((s) => String(s || "").slice(0, 40));
+    while (cleaned.length < 10) cleaned.push("");
+    if (!roomId) return;
+    await updateDoc(doc(dbRef.current, "rooms", roomId), {
+      criteria: cleaned.slice(0, 10),
+    });
+    setEditingCriteria(false);
+  };
+
   const myAvg = useMemo(
     () => (myScores.length ? myScores.reduce((a, b) => a + b, 0) / myScores.length : 0),
     [myScores]
@@ -238,9 +324,7 @@ export default function App() {
       <div className="min-h-screen bg-neutral-50 text-neutral-900">
         <div className="mx-auto max-w-xl px-4 py-10">
           <h1 className="mb-2 text-3xl font-bold">🎶 Song Contest Rater — Realtime</h1>
-          <p className="mb-6 text-sm text-neutral-500">
-            Введите имя и код комнаты. Все участники видят результаты в реальном времени.
-          </p>
+          <p className="mb-6 text-sm text-neutral-500">Введите имя и код комнаты.</p>
 
           <form onSubmit={startRoom} className="space-y-4 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
             <div>
@@ -277,7 +361,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
-      <div className="mx-auto max-w-6xl px-4 py-6">
+      <div className="mx-auto max-w-7xl px-4 py-6">
         {/* top bar */}
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -294,7 +378,14 @@ export default function App() {
               Вы: <span className="font-medium text-neutral-700">{displayName || "Без имени"}</span>
             </div>
           </div>
+
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setEditingCriteria(true)}
+              className="rounded-xl border border-neutral-300 bg-white px-3 py-2 text-xs shadow-sm hover:bg-neutral-100"
+            >
+              Редактировать критерии
+            </button>
             <button
               onClick={() => setStep("gate")}
               className="rounded-xl border border-neutral-300 bg-white px-3 py-2 text-xs shadow-sm hover:bg-neutral-100"
@@ -304,9 +395,10 @@ export default function App() {
           </div>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-3">
-          {/* left: songs & people */}
+        <div className="grid gap-6 xl:grid-cols-3">
+          {/* ЛЕВАЯ КОЛОНКА */}
           <div className="space-y-6">
+            {/* Песни */}
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
               <div className="mb-2 flex items-center justify-between">
                 <h2 className="text-lg font-semibold">Песни</h2>
@@ -354,21 +446,86 @@ export default function App() {
               </div>
             </div>
 
+            {/* Участники + сводка по участнику */}
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-              <h2 className="mb-2 text-lg font-semibold">Участники ({participants.length})</h2>
-              <div className="flex flex-wrap gap-2">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Участники ({participants.length})</h2>
+              </div>
+
+              <div className="mb-3 flex flex-wrap gap-2">
                 {participants.map((p) => (
-                  <span key={p.id} className="rounded-xl bg-neutral-100 px-2 py-1 text-xs text-neutral-700">
+                  <span
+                    key={p.id}
+                    className={`rounded-xl px-2 py-1 text-xs ${
+                      selectedParticipantId === p.id ? "bg-black text-white" : "bg-neutral-100 text-neutral-700"
+                    }`}
+                    onClick={() => setSelectedParticipantId(p.id)}
+                    role="button"
+                  >
                     {p.name || "Без имени"}
                   </span>
                 ))}
                 {participants.length === 0 && <span className="text-xs text-neutral-500">Ещё никто не зашёл</span>}
               </div>
+
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-neutral-200">
+                  <thead>
+                    <tr className="text-xs text-neutral-600">
+                      <th className="px-3 py-2 text-left">Песня</th>
+                      {criteria.map((c, i) => (
+                        <th key={i} className="px-3 py-2 text-left">{c}</th>
+                      ))}
+                      <th className="px-3 py-2 text-left">Средн.</th>
+                      <th className="px-3 py-2 text-left">Сумма</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {[...participantRows]
+                      .sort((a, b) => (b.sum || 0) - (a.sum || 0))
+                      .map((r) => (
+                        <tr key={r.songId} className="text-sm">
+                          <td className="px-3 py-2 font-medium">{r.songName}</td>
+                          {r.scores.map((x, i) => (
+                            <td key={i} className="px-3 py-2">{x != null ? x : "—"}</td>
+                          ))}
+                          <td className="px-3 py-2">{fmt2(r.avg || 0)}</td>
+                          <td className="px-3 py-2">{r.sum || 0}</td>
+                        </tr>
+                      ))}
+                    {participantRows.length === 0 && (
+                      <tr><td className="px-3 py-2 text-xs text-neutral-500">Нет данных</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Топ-10 по сумме */}
+            <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+              <h2 className="mb-3 text-lg font-semibold">Топ-10 (сумма баллов)</h2>
+              {topRows.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
+                  Пока нет данных
+                </div>
+              ) : (
+                <ol className="space-y-1">
+                  {[...topRows]
+                    .sort((a, b) => b.totalSum - a.totalSum)
+                    .slice(0, 10)
+                    .map((r, idx) => (
+                      <li key={r.id} className="flex items-center justify-between rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
+                        <span className="font-semibold">{idx + 1}. {r.name}</span>
+                        <span className="text-neutral-700">{r.totalSum}</span>
+                      </li>
+                    ))}
+                </ol>
+              )}
             </div>
           </div>
 
-          {/* right: sliders + submit + stats */}
-          <div className="lg:col-span-2 space-y-6">
+          {/* ПРАВАЯ ЧАСТЬ: слайдеры + итоги */}
+          <div className="xl:col-span-2 space-y-6">
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
               <div className="mb-3">
                 <h2 className="text-lg font-semibold">
@@ -420,7 +577,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* realtime aggregates */}
+            {/* Итоги по выбранной песне */}
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
               <h3 className="mb-3 text-lg font-semibold">Результаты по песне (realtime)</h3>
               <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -438,9 +595,54 @@ export default function App() {
               </div>
             </div>
 
+            {/* Таблица «Итоги по всем песням» (по средним, как было) */}
             <Scoreboard db={dbRef} roomId={roomId} criteria={criteria} />
           </div>
         </div>
+
+        {/* Модалка редактирования критериев */}
+        {editingCriteria && (
+          <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4">
+            <div className="w-full max-w-xl rounded-2xl border border-neutral-200 bg-white p-4 shadow-xl">
+              <h3 className="mb-3 text-lg font-semibold">Редактировать критерии</h3>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {criteriaDraft.map((val, i) => (
+                  <div key={i} className="space-y-1">
+                    <div className="text-xs text-neutral-500">Критерий {i + 1}</div>
+                    <input
+                      className="w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none ring-neutral-400 focus:ring"
+                      value={val}
+                      onChange={(e) =>
+                        setCriteriaDraft((prev) => prev.map((x, idx) => (idx === i ? e.target.value : x)))
+                      }
+                      maxLength={40}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  onClick={() => {
+                    setCriteriaDraft(criteria);
+                    setEditingCriteria(false);
+                  }}
+                  className="rounded-xl border border-neutral-300 bg-white px-4 py-2 text-sm hover:bg-neutral-100"
+                >
+                  Отмена
+                </button>
+                <button
+                  onClick={saveCriteria}
+                  className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:bg-neutral-800"
+                >
+                  Сохранить
+                </button>
+              </div>
+              <div className="mt-2 text-[11px] text-neutral-500">
+                * Меняются только названия критериев (всегда 10). Старые голоса не пропадают.
+              </div>
+            </div>
+          </div>
+        )}
 
         <footer className="mt-6 text-center text-xs text-neutral-400">
           Realtime на Firestore · Данные общие для всех в комнате
@@ -467,15 +669,14 @@ function randomRoomCode() {
   )}`;
 }
 
-/** Таблица итогов — настоящий realtime по голосам каждой песни */
+/** Таблица итогов — по средним (как было изначально) */
 function Scoreboard({ db, roomId, criteria }) {
   const [rows, setRows] = useState([]);
-  const votesUnsubsRef = useRef({}); // запоминаем подписки на /votes для каждого songId
+  const votesUnsubsRef = useRef({});
 
-  // смена комнаты — чистим все подписки на голоса
   useEffect(() => {
     return () => {
-      Object.values(votesUnsubsRef.current).forEach((unsub) => unsub && unsub());
+      Object.values(votesUnsubsRef.current).forEach((u) => u && u());
       votesUnsubsRef.current = {};
     };
   }, [roomId]);
@@ -483,16 +684,13 @@ function Scoreboard({ db, roomId, criteria }) {
   useEffect(() => {
     if (!db.current || !roomId) return;
 
-    // 1) слушаем список песен
     const unsubSongs = onSnapshot(
       query(collection(db.current, "rooms", roomId, "songs"), orderBy("order", "asc")),
       (qs) => {
         const songs = qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
 
-        // 2) для каждой песни — подписка на её голоса (если ещё нет)
         songs.forEach((song) => {
           if (votesUnsubsRef.current[song.id]) return;
-
           const unsubVotes = onSnapshot(
             collection(db.current, "rooms", roomId, "songs", song.id, "votes"),
             (vs) => {
@@ -509,17 +707,15 @@ function Scoreboard({ db, roomId, criteria }) {
                 const idx = prev.findIndex((r) => r.id === song.id);
                 const nextRow = { id: song.id, name: song.name, count, avgAll, perCritAvg };
                 if (idx === -1) return [...prev, nextRow];
-                const next = [...prev];
-                next[idx] = nextRow;
-                return next;
+                const cp = [...prev];
+                cp[idx] = nextRow;
+                return cp;
               });
             }
           );
-
           votesUnsubsRef.current[song.id] = unsubVotes;
         });
 
-        // 3) удаляем лишние подписки, если песню удалили
         const existingIds = new Set(songs.map((s) => s.id));
         Object.entries(votesUnsubsRef.current).forEach(([songId, unsub]) => {
           if (!existingIds.has(songId)) {
