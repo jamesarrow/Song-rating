@@ -16,13 +16,11 @@ import {
 
 /**
  * 🎶 Song Contest Rater — Firebase
- * - Переменное число критериев (add/rename/delete, минимум 1)
- * - Слайдеры 1–10, «Оценить», средние в чёрной «пилюле»
- * - Сводка по участнику (карточки мобайл / таблица десктоп)
- * - Итоги по всем песням + Топ-10 — по средней
- * - Убрали «результаты по песне»
- * - ✅ Активная песня подсвечивается зелёным
- * - ✅ Мобайл-порядок: Критерии → Песни → Участники → Итоги по всем → Топ-10
+ * - Мобайл: Песни (свернуть/развернуть) → Критерии → Участники → Итоги по всем → Топ-10
+ * - Десктоп: слева Песни; справа Критерии, Участники, Итоги, Топ-10
+ * - Активная песня зелёным
+ * - Флаги стран (эмодзи) из названия «Страна — Артист — Трек»
+ * - Переменное число критериев (добавлять/переименовывать/удалять), средние считаются по текущим
  */
 
 const FIREBASE_CONFIG = {
@@ -70,6 +68,36 @@ const uid = () =>
   localStorage.getItem("songRater.uid") ||
   (localStorage.setItem("songRater.uid", crypto.randomUUID()),
   localStorage.getItem("songRater.uid"));
+
+/** 🇺🇳 Флаги: простая карта RU-названий → ISO-2 */
+const RU_TO_ISO = {
+  "россия": "RU", "украина": "UA", "беларусь": "BY", "армения": "AM", "азербайджан": "AZ",
+  "грузия": "GE", "молдова": "MD", "израиль": "IL", "кипр": "CY", "турция": "TR",
+  "швеция": "SE", "норвегия": "NO", "финляндия": "FI", "дания": "DK", "исландия": "IS",
+  "эстония": "EE", "латвия": "LV", "литва": "LT", "польша": "PL", "германия": "DE",
+  "франция": "FR", "италия": "IT", "испания": "ES", "португалия": "PT", "нидерланды": "NL",
+  "бельгия": "BE", "швейцария": "CH", "австрия": "AT", "чехия": "CZ", "словакия": "SK",
+  "словения": "SI", "хорватия": "HR", "сербия": "RS", "черногория": "ME", "албания": "AL",
+  "северная македония": "MK", "босния и герцеговина": "BA", "румыния": "RO", "болгария": "BG",
+  "венгрия": "HU", "греция": "GR", "ирландия": "IE", "великобритания": "GB", "люксембург": "LU",
+  "сан-марино": "SM", "мальта": "MT", "монако": "MC", "андорра": "AD", "австралия": "AU",
+};
+function isoFlag(iso2) {
+  if (!iso2) return "";
+  const A = 127397; // regional indicator offset
+  return String.fromCodePoint(...iso2.toUpperCase().split("").map(c => c.charCodeAt(0) + A));
+}
+function countryToFlagEmoji(countryRu) {
+  if (!countryRu) return "";
+  const iso = RU_TO_ISO[countryRu.trim().toLowerCase()];
+  return iso ? isoFlag(iso) : "";
+}
+/** Вытащить страну из строки "Страна — Артист — Трек" (—, -, –) */
+function extractCountry(name) {
+  if (!name) return "";
+  const parts = name.split(/—|–|-/); // em/en/-
+  return (parts[0] || "").trim();
+}
 
 function computeAveragesFromVotes(votes, criteriaLen) {
   const K = Math.max(1, criteriaLen);
@@ -119,12 +147,15 @@ export default function App() {
   const [myScores, setMyScores] = useState(() => Array(DEFAULT_CRITERIA.length).fill(5));
   const [saving, setSaving] = useState(false);
 
+  // mobile songs accordion
+  const [songsOpen, setSongsOpen] = useState(false);
+
   // participant summary
   const [selectedParticipantId, setSelectedParticipantId] = useState("");
-  const [participantRows, setParticipantRows] = useState([]); // {songId,songName,scores[],avg,sum}
+  const [participantRows, setParticipantRows] = useState([]);
 
   // top10
-  const [topRows, setTopRows] = useState([]); // {id,name,avgAll}
+  const [topRows, setTopRows] = useState([]);
   const topVotesUnsubsRef = useRef({});
 
   useEffect(() => {
@@ -248,9 +279,13 @@ export default function App() {
     const name = newSong.trim();
     if (!name) return;
     const order = (songs[songs.length - 1]?.order || 0) + 1;
+    // флаг
+    const country = extractCountry(name);
+    const flag = countryToFlagEmoji(country);
     const res = await addDoc(collection(dbRef.current, "rooms", roomId, "songs"), {
       name,
       order,
+      flag: flag || null,
       createdAt: serverTimestamp(),
     });
     setNewSong("");
@@ -429,10 +464,122 @@ export default function App() {
           </div>
         </div>
 
-        {/** 💡 Перестроили сетку: каждый блок — прямой ребёнок grid, задаём order-* для мобилок */}
+        {/* ГРИД. На мобилках порядок: Песни(1) → Критерии(2) → Участники(3) → Итоги(4) → Топ-10(5) */}
         <div className="grid gap-4 sm:gap-6 xl:grid-cols-3">
-          {/* Критерии (мобайл — первые) */}
-          <div className="order-1 xl:order-none xl:col-span-2 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+          {/* Песни: слева на ПК; мобильный аккордеон */}
+          <div className="order-1 xl:order-none xl:col-span-1 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Песни</h2>
+              <button
+                className="sm:hidden rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs"
+                onClick={() => setSongsOpen((v) => !v)}
+              >
+                {songsOpen ? "Скрыть список" : "Показать список"}
+              </button>
+            </div>
+
+            {/* выбранная песня (мобайл, когда список скрыт) */}
+            {!songsOpen && (
+              <div className="sm:hidden mb-3 rounded-xl border border-neutral-200 bg-neutral-50 p-3 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="font-medium truncate">
+                    {(() => {
+                      const s = songs.find((x) => x.id === selectedSongId) || songs[0];
+                      if (!s) return "—";
+                      const flag = s.flag || countryToFlagEmoji(extractCountry(s.name));
+                      return (
+                        <>
+                          <span className="mr-1">{flag}</span>
+                          {s.name}
+                        </>
+                      );
+                    })()}
+                  </div>
+                  <button
+                    className="rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs"
+                    onClick={() => setSongsOpen(true)}
+                  >
+                    Изменить
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* список песен (на ПК всегда, на мобиле по toggle) */}
+            {(songsOpen || window.innerWidth >= 640) && (
+              <>
+                <div className="mb-3 flex gap-2">
+                  <input
+                    className="flex-1 rounded-xl border border-neutral-300 px-3 py-3 text-sm outline-none ring-neutral-400 focus:ring"
+                    placeholder="Страна — Артист — Трек"
+                    value={newSong}
+                    onChange={(e) => setNewSong(e.target.value)}
+                  />
+                  <button
+                    onClick={addSong}
+                    className="rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white hover:bg-neutral-800"
+                  >
+                    Добавить
+                  </button>
+                </div>
+
+                <div className="max-h-72 sm:max-h-80 space-y-1 overflow-auto pr-1 -mr-1">
+                  {songs.map((s) => {
+                    const isSelected = selectedSongId === s.id;
+                    const isActive = activeSongId === s.id;
+                    const flag = s.flag || countryToFlagEmoji(extractCountry(s.name));
+                    return (
+                      <div
+                        key={s.id}
+                        className={`flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
+                          isActive
+                            ? "border-green-500 bg-green-50"
+                            : isSelected
+                            ? "border-black bg-neutral-50"
+                            : "border-neutral-200 bg-white"
+                        }`}
+                      >
+                        <button
+                          onClick={() => {
+                            setSelectedSongId(s.id);
+                            if (window.innerWidth < 640) setSongsOpen(false);
+                          }}
+                          className="text-left font-medium truncate"
+                          title={s.name}
+                        >
+                          <span className="mr-1">{flag}</span>
+                          {s.name}
+                        </button>
+                        <div className="flex items-center gap-2">
+                          {isActive ? (
+                            <span className="rounded-full bg-green-600 px-2 py-1 text-xs font-semibold text-white">
+                              Активная
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => setRoomActiveSong(s.id)}
+                              className="rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs hover:bg-neutral-100"
+                              title="Сделать активной"
+                            >
+                              Сделать активной
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {songs.length === 0 && (
+                    <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
+                      Пока нет песен. Добавьте первую!
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Критерии: справа на ПК, на мобилках — второй блок */}
+          <div className="order-2 xl:order-none xl:col-span-2 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
             <div className="mb-3">
               <h2 className="text-lg font-semibold">
                 Оценки: {songs.find((s) => s.id === selectedSongId)?.name || "—"}
@@ -485,71 +632,8 @@ export default function App() {
             </div>
           </div>
 
-          {/* Песни (мобайл — вторые) */}
-          <div className="order-2 xl:order-none xl:col-span-1 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Песни</h2>
-            </div>
-            <div className="mb-3 flex gap-2">
-              <input
-                className="flex-1 rounded-xl border border-neutral-300 px-3 py-3 text-sm outline-none ring-neutral-400 focus:ring"
-                placeholder="Страна — Артист — Трек"
-                value={newSong}
-                onChange={(e) => setNewSong(e.target.value)}
-              />
-              <button
-                onClick={addSong}
-                className="rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white hover:bg-neutral-800"
-              >
-                Добавить
-              </button>
-            </div>
-            <div className="max-h-72 sm:max-h-80 space-y-1 overflow-auto pr-1 -mr-1">
-              {songs.map((s) => {
-                const isSelected = selectedSongId === s.id;
-                const isActive = activeSongId === s.id;
-                return (
-                  <div
-                    key={s.id}
-                    className={`flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
-                      isActive
-                        ? "border-green-500 bg-green-50"
-                        : isSelected
-                        ? "border-black bg-neutral-50"
-                        : "border-neutral-200 bg-white"
-                    }`}
-                  >
-                    <button onClick={() => setSelectedSongId(s.id)} className="text-left font-medium">
-                      {s.name}
-                    </button>
-                    <div className="flex items-center gap-2">
-                      {isActive ? (
-                        <span className="rounded-full bg-green-600 px-2 py-1 text-xs font-semibold text-white">
-                          Активная
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => setRoomActiveSong(s.id)}
-                          className="rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs hover:bg-neutral-100"
-                          title="Сделать активной"
-                        >
-                          Сделать активной
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-              {songs.length === 0 && (
-                <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
-                  Пока нет песен. Добавьте первую!
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Участники (мобайл — ближе к концу) */}
-          <div className="order-4 xl:order-none xl:col-span-2 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+          {/* Участники */}
+          <div className="order-3 xl:order-none xl:col-span-2 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-lg font-semibold">Участники ({participants.length})</h2>
             </div>
@@ -634,13 +718,13 @@ export default function App() {
             </div>
           </div>
 
-          {/* Итоги по всем песням (мобайл — почти самый конец) */}
-          <ScoreboardWrap cls="order-5 xl:order-none xl:col-span-2">
+          {/* Итоги по всем песням */}
+          <ScoreboardWrap cls="order-4 xl:order-none xl:col-span-2">
             <Scoreboard db={dbRef} roomId={roomId} criteria={criteria} />
           </ScoreboardWrap>
 
-          {/* Топ-10 (мобайл — самый конец) */}
-          <div className="order-6 xl:order-none xl:col-span-1 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+          {/* Топ-10 */}
+          <div className="order-5 xl:order-none xl:col-span-1 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
             <h2 className="mb-3 text-lg font-semibold">Топ-10 (средняя оценка)</h2>
             {topRows.length === 0 ? (
               <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
@@ -808,7 +892,7 @@ function Scoreboard({ db, roomId, criteria }) {
               });
             }
           );
-          votesUnsubsRef.current[song.id] = unsubVotes;
+            votesUnsubsRef.current[song.id] = unsubVotes;
         });
 
         const existingIds = new Set(songs.map((s) => s.id));
@@ -827,7 +911,6 @@ function Scoreboard({ db, roomId, criteria }) {
     };
   }, [db, roomId, criteria.length]);
 
-  // мобайл — список, десктоп — таблица
   return (
     <>
       {rows.length === 0 ? (
