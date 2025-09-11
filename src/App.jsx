@@ -15,12 +15,12 @@ import {
 } from "firebase/firestore";
 
 /**
- * 🎶 Song Contest Rater — Realtime (Firebase)
+ * 🎶 Song Contest Rater — Firebase
  * - Переменное число критериев (добавлять/переименовывать/удалять, минимум 1)
- * - Голоса не теряются: считаем только по текущим критериям
  * - Слайдеры 1–10, «Оценить», средние в чёрной «пилюле», округление до десятых
- * - Сводка по участнику (карточки на мобайле / таблица на десктопе)
+ * - Сводка по участнику (карточки на мобайле / таблица на десктопе) — теперь в широкой правой колонке
  * - Итоги по всем песням + Топ-10 — по средней
+ * - Убрана панель «Результаты по песне»
  * - Mobile-first: нижняя фикс-панель на телефоне с «Оценить»
  */
 
@@ -70,7 +70,7 @@ const uid = () =>
   (localStorage.setItem("songRater.uid", crypto.randomUUID()),
   localStorage.getItem("songRater.uid"));
 
-/** Безопасные средние:
+/** Средние:
  * perCritAvg[i] — среднее по критерию i только среди голосов, где он заполнен;
  * avgAll — среднее из тех perCritAvg, у которых есть хотя бы один голос. */
 function computeAveragesFromVotes(votes, criteriaLen) {
@@ -123,9 +123,6 @@ export default function App() {
   const [myScores, setMyScores] = useState(() => Array(DEFAULT_CRITERIA.length).fill(5));
   const [saving, setSaving] = useState(false);
 
-  // агрегаты по выбранной песне
-  const [agg, setAgg] = useState({ count: 0, avgAll: 0, perCritAvg: Array(DEFAULT_CRITERIA.length).fill(0) });
-
   // сводка по участнику
   const [selectedParticipantId, setSelectedParticipantId] = useState("");
   const [participantRows, setParticipantRows] = useState([]); // {songId,songName,scores[],avg,sum}
@@ -148,7 +145,6 @@ export default function App() {
       for (let i = 0; i < K; i++) arr[i] = clamp(prev[i] ?? 5);
       return arr;
     });
-    setAgg((prev) => ({ ...prev, perCritAvg: Array(K).fill(0) }));
   }, [criteria]);
 
   const createRoomIfMissing = async (db, rid, name) => {
@@ -202,7 +198,7 @@ export default function App() {
       setSelectedSongId((prev) => prev || prefer?.id || null);
     });
 
-    // Топ-10: подписки на список песен и их /votes — средняя по текущему числу критериев
+    // Топ-10: подписки на /votes → средняя по текущему числу критериев
     const unsubSongsForTop = onSnapshot(
       query(collection(db, "rooms", rid, "songs"), orderBy("order", "asc")),
       (qs) => {
@@ -269,7 +265,7 @@ export default function App() {
     await setRoomActiveSong(res.id);
   };
 
-  // мои сохранённые оценки и агрегаты по выбранной песне
+  // мои сохранённые оценки (для слайдеров)
   useEffect(() => {
     if (!ready || !roomId || !selectedSongId) return;
 
@@ -286,19 +282,7 @@ export default function App() {
       }
     });
 
-    const unsubAgg = onSnapshot(
-      collection(dbRef.current, "rooms", roomId, "songs", selectedSongId, "votes"),
-      (qs) => {
-        const votes = qs.docs.map((d) => d.data());
-        const { perCritAvg, avgAll } = computeAveragesFromVotes(votes, Math.max(1, criteria.length));
-        setAgg({ count: votes.length, perCritAvg, avgAll });
-      }
-    );
-
-    return () => {
-      unsubMine?.();
-      unsubAgg?.();
-    };
+    return () => unsubMine?.();
   }, [ready, roomId, selectedSongId, criteria.length]);
 
   // сводка выбранного участника
@@ -354,7 +338,7 @@ export default function App() {
     }
   };
 
-  // редактор критериев (add/remove/save)
+  // редактор критериев
   const addCriterionDraft = () => {
     if (criteriaDraft.length >= MAX_CRITERIA) return;
     setCriteriaDraft((prev) => [...prev, `Критерий ${prev.length + 1}`]);
@@ -383,7 +367,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-neutral-50 text-neutral-900">
         <div className="mx-auto max-w-xl px-4 py-10">
-          <h1 className="mb-2 text-3xl font-bold">🎶 Song Contest Rater — Realtime</h1>
+          <h1 className="mb-2 text-3xl font-bold">🎶 Song Contest Rater</h1>
           <p className="mb-6 text-sm text-neutral-500">Введите имя и код комнаты.</p>
 
           <form onSubmit={startRoom} className="space-y-4 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
@@ -456,7 +440,7 @@ export default function App() {
         </div>
 
         <div className="grid gap-4 sm:gap-6 xl:grid-cols-3">
-          {/* ЛЕВАЯ КОЛОНКА */}
+          {/* ЛЕВАЯ КОЛОНКА: Песни + Топ-10 */}
           <div className="space-y-4 sm:space-y-6">
             {/* Песни */}
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
@@ -506,92 +490,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Участники + сводка по участнику */}
-            <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Участники ({participants.length})</h2>
-              </div>
-
-              <div className="mb-3 flex flex-wrap gap-2">
-                {participants.map((p) => (
-                  <span
-                    key={p.id}
-                    className={`rounded-xl px-2 py-1 text-xs ${
-                      selectedParticipantId === p.id ? "bg-black text-white" : "bg-neutral-100 text-neutral-700"
-                    }`}
-                    onClick={() => setSelectedParticipantId(p.id)}
-                    role="button"
-                  >
-                    {p.name || "Без имени"}
-                  </span>
-                ))}
-                {participants.length === 0 && <span className="text-xs text-neutral-500">Ещё никто не зашёл</span>}
-              </div>
-
-              {/* Мобайл-версия: карточки */}
-              <div className="sm:hidden space-y-2">
-                {[...participantRows]
-                  .sort((a, b) => (b.sum || 0) - (a.sum || 0))
-                  .map((r) => (
-                    <div key={r.songId} className="rounded-xl border border-neutral-200 bg-white p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="font-medium text-sm">{r.songName}</div>
-                        <Pill>{fmt1(r.avg || 0)}</Pill>
-                      </div>
-                      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-                        {criteria.map((c, i) => (
-                          <div key={i} className="flex items-center justify-between gap-2">
-                            <span className="text-neutral-500 truncate">{c}</span>
-                            <span className="font-medium">{r.scores[i] != null ? r.scores[i] : "—"}</span>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-2 text-[11px] text-neutral-500">
-                        Сумма: <span className="font-semibold text-neutral-700">{r.sum || 0}</span>
-                      </div>
-                    </div>
-                  ))}
-                {participantRows.length === 0 && (
-                  <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
-                    Нет данных
-                  </div>
-                )}
-              </div>
-
-              {/* Десктоп-таблица */}
-              <div className="hidden sm:block overflow-x-auto">
-                <table className="min-w-full divide-y divide-neutral-200">
-                  <thead>
-                    <tr className="text-xs text-neutral-600">
-                      <th className="px-3 py-2 text-left">Песня</th>
-                      <th className="px-3 py-2 text-left">Средн.</th>
-                      {criteria.map((c, i) => (
-                        <th key={i} className="px-3 py-2 text-left">{c}</th>
-                      ))}
-                      <th className="px-3 py-2 text-left">Сумма</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-100">
-                    {[...participantRows]
-                      .sort((a, b) => (b.sum || 0) - (a.sum || 0))
-                      .map((r) => (
-                        <tr key={r.songId} className="text-sm">
-                          <td className="px-3 py-2 font-medium">{r.songName}</td>
-                          <td className="px-3 py-2"><Pill>{fmt1(r.avg || 0)}</Pill></td>
-                          {r.scores.map((x, i) => (
-                            <td key={i} className="px-3 py-2">{x != null ? x : "—"}</td>
-                          ))}
-                          <td className="px-3 py-2">{r.sum || 0}</td>
-                        </tr>
-                      ))}
-                    {participantRows.length === 0 && (
-                      <tr><td className="px-3 py-2 text-xs text-neutral-500">Нет данных</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
             {/* Топ-10 по средней оценке */}
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
               <h2 className="mb-3 text-lg font-semibold">Топ-10 (средняя оценка)</h2>
@@ -615,8 +513,9 @@ export default function App() {
             </div>
           </div>
 
-          {/* ПРАВАЯ ЧАСТЬ: слайдеры + итоги */}
+          {/* ПРАВАЯ ШИРОКАЯ КОЛОНКА: Слайдеры + Участники + Итоги по всем песням */}
           <div className="xl:col-span-2 space-y-4 sm:space-y-6">
+            {/* Слайдеры */}
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
               <div className="mb-3">
                 <h2 className="text-lg font-semibold">
@@ -652,7 +551,7 @@ export default function App() {
                 ))}
               </div>
 
-              {/* Верхняя панель действий (desktop) */}
+              {/* верхняя панель действий (desktop) */}
               <div className="mt-4 hidden sm:flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm text-neutral-700 flex items-center gap-2">
                   <span>Ваша средняя сейчас:</span>
@@ -670,30 +569,98 @@ export default function App() {
               </div>
             </div>
 
-            {/* Итоги по выбранной песне */}
+            {/* УЧАСТНИКИ — ПЕРЕНЕСЕНО СЮДА, БОЛЬШОЙ БЛОК */}
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-              <h3 className="mb-3 text-lg font-semibold">Результаты по песне (realtime)</h3>
-              <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <Stat label="Голосов" value={agg.count} />
-                <Stat label="Средняя по всем критериям" value={<Pill>{fmt1(agg.avgAll)}</Pill>} raw />
-                <Stat label="Ваше среднее" value={<Pill>{fmt1(myAvg)}</Pill>} raw />
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Участники ({participants.length})</h2>
               </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                {criteria.map((c, i) => (
-                  <div key={i} className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 text-sm">
-                    <div className="mb-1 text-neutral-600">{c}</div>
-                    <div className="text-lg font-semibold">{fmt1(agg.perCritAvg[i] || 0)}</div>
-                  </div>
+
+              <div className="mb-3 flex flex-wrap gap-2">
+                {participants.map((p) => (
+                  <span
+                    key={p.id}
+                    className={`rounded-xl px-2 py-1 text-xs ${
+                      selectedParticipantId === p.id ? "bg-black text-white" : "bg-neutral-100 text-neutral-700"
+                    }`}
+                    onClick={() => setSelectedParticipantId(p.id)}
+                    role="button"
+                  >
+                    {p.name || "Без имени"}
+                  </span>
                 ))}
+                {participants.length === 0 && <span className="text-xs text-neutral-500">Ещё никто не зашёл</span>}
+              </div>
+
+              {/* мобайл: карточки */}
+              <div className="sm:hidden space-y-2">
+                {[...participantRows]
+                  .sort((a, b) => (b.sum || 0) - (a.sum || 0))
+                  .map((r) => (
+                    <div key={r.songId} className="rounded-xl border border-neutral-200 bg-white p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-medium text-sm">{r.songName}</div>
+                        <Pill>{fmt1(r.avg || 0)}</Pill>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                        {criteria.map((c, i) => (
+                          <div key={i} className="flex items-center justify-between gap-2">
+                            <span className="text-neutral-500 truncate">{c}</span>
+                            <span className="font-medium">{r.scores[i] != null ? r.scores[i] : "—"}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2 text-[11px] text-neutral-500">
+                        Сумма: <span className="font-semibold text-neutral-700">{r.sum || 0}</span>
+                      </div>
+                    </div>
+                  ))}
+                {participantRows.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
+                    Нет данных
+                  </div>
+                )}
+              </div>
+
+              {/* десктоп: таблица */}
+              <div className="hidden sm:block overflow-x-auto">
+                <table className="min-w-full divide-y divide-neutral-200">
+                  <thead>
+                    <tr className="text-xs text-neutral-600">
+                      <th className="px-3 py-2 text-left">Песня</th>
+                      <th className="px-3 py-2 text-left">Средн.</th>
+                      {criteria.map((c, i) => (
+                        <th key={i} className="px-3 py-2 text-left">{c}</th>
+                      ))}
+                      <th className="px-3 py-2 text-left">Сумма</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {[...participantRows]
+                      .sort((a, b) => (b.sum || 0) - (a.sum || 0))
+                      .map((r) => (
+                        <tr key={r.songId} className="text-sm">
+                          <td className="px-3 py-2 font-medium">{r.songName}</td>
+                          <td className="px-3 py-2"><Pill>{fmt1(r.avg || 0)}</Pill></td>
+                          {r.scores.map((x, i) => (
+                            <td key={i} className="px-3 py-2">{x != null ? x : "—"}</td>
+                          ))}
+                          <td className="px-3 py-2">{r.sum || 0}</td>
+                        </tr>
+                      ))}
+                    {participantRows.length === 0 && (
+                      <tr><td className="px-3 py-2 text-xs text-neutral-500">Нет данных</td></tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
 
-            {/* Итоги по всем песням (реалтайм, по средним) */}
+            {/* Итоги по всем песням (таблица/список) */}
             <Scoreboard db={dbRef} roomId={roomId} criteria={criteria} />
           </div>
         </div>
 
-        {/* Модалка редактирования критериев (добавить/удалить/переименовать) */}
+        {/* Модалка редактирования критериев */}
         {editingCriteria && (
           <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4">
             <div className="w-full max-w-xl rounded-2xl border border-neutral-200 bg-white p-4 shadow-xl">
@@ -763,7 +730,7 @@ export default function App() {
         )}
 
         <footer className="mt-6 text-center text-xs text-neutral-400">
-          Realtime на Firestore · Данные общие для всех в комнате
+          Работает на Firestore · Общие данные для всех в комнате
         </footer>
       </div>
 
@@ -806,7 +773,7 @@ function randomRoomCode() {
   )}`;
 }
 
-/** Итоги по всем песням — реалтайм (по средним, 1 знак) */
+/** Итоги по всем песням — по средним (1 знак) */
 function Scoreboard({ db, roomId, criteria }) {
   const [rows, setRows] = useState([]);
   const votesUnsubsRef = useRef({});
@@ -868,7 +835,7 @@ function Scoreboard({ db, roomId, criteria }) {
   return (
     <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Итоги по всем песням (realtime)</h3>
+        <h3 className="text-lg font-semibold">Итоги по всем песням</h3>
       </div>
 
       {rows.length === 0 ? (
@@ -877,7 +844,7 @@ function Scoreboard({ db, roomId, criteria }) {
         </div>
       ) : (
         <>
-          {/* Мобайл-список */}
+          {/* мобайл: список */}
           <div className="sm:hidden space-y-2">
             {[...rows].sort((a, b) => b.avgAll - a.avgAll).map((r, idx) => (
               <div key={r.id} className="flex items-center justify-between rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2">
@@ -891,7 +858,7 @@ function Scoreboard({ db, roomId, criteria }) {
             ))}
           </div>
 
-          {/* Десктоп-таблица */}
+          {/* десктоп: таблица */}
           <div className="hidden sm:block overflow-x-auto">
             <table className="min-w-full divide-y divide-neutral-200">
               <thead className="bg-neutral-50">
