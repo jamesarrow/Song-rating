@@ -12,15 +12,17 @@ import {
   serverTimestamp,
   query,
   orderBy,
+  deleteDoc,
+  getDocs,
 } from "firebase/firestore";
 
 /**
  * Song Contest Rater — Realtime (Firebase)
  * - Флаги для любой страны (RU/EN) через Intl.DisplayNames
- * - Аватар участника: загрузка, авто-кроп в круг (dataURL в Firestore)
- * - Плашка «Сейчас: Страна» большая и зелёная (особенно на мобилках)
+ * - Аватар участника: загрузка, авто-кроп в круг (base64 в Firestore)
+ * - Верх: «Комната {код}» → Имя (крупнее) → «Сейчас: …» зелёным
  * - Мобайл: Песни(аккордеон) → Критерии → Участники → Итоги → Топ-10
- * - ПК: слева Песни, справа Критерии/Участники/Итоги/Топ-10
+ * - Удаление песен (с голосами) кнопкой 🗑
  */
 
 const FIREBASE_CONFIG = {
@@ -45,8 +47,8 @@ const DEFAULT_CRITERIA = [
   "Подача",
   "Эмоции",
 ];
-
 const MAX_CRITERIA = 20;
+
 const clamp = (n, min = 1, max = 10) => Math.max(min, Math.min(max, Number(n)));
 const fmt1 = (n) => (isFinite(n) ? Number(n).toFixed(1).replace(".", ",") : "0,0");
 
@@ -121,7 +123,7 @@ function flagEmojiFromCountryName(countryName) {
   return code ? isoFlag(code) : "";
 }
 
-/* ===== Аватар: crop в круг и dataURL ===== */
+/* ===== Аватар (crop в круг → dataURL) ===== */
 async function imageFileToCircleDataURL(file, size = 256) {
   const dataUrl = await new Promise((res, rej) => {
     const fr = new FileReader();
@@ -177,6 +179,7 @@ function computeAveragesFromVotes(votes, criteriaLen) {
   return { perCritAvg, avgAll };
 }
 
+/* ==================== APP ==================== */
 export default function App() {
   const dbRef = useRef(null);
   const criteriaRef = useRef(DEFAULT_CRITERIA);
@@ -372,6 +375,29 @@ export default function App() {
     await setRoomActiveSong(res.id);
   };
 
+  const deleteSong = async (song) => {
+    if (!song) return;
+    const yes = window.confirm(`Удалить песню «${song.name}»? Все её голоса будут удалены.`);
+    if (!yes) return;
+    try {
+      // удаляем голоса
+      const votesSnap = await getDocs(collection(dbRef.current, "rooms", roomId, "songs", song.id, "votes"));
+      await Promise.all(
+        votesSnap.docs.map((d) => deleteDoc(doc(dbRef.current, "rooms", roomId, "songs", song.id, "votes", d.id)))
+      );
+      // если она активная — сбросим активную
+      if (activeSongId === song.id) {
+        await updateDoc(doc(dbRef.current, "rooms", roomId), { activeSongId: null });
+      }
+      // удаляем саму песню
+      await deleteDoc(doc(dbRef.current, "rooms", roomId, "songs", song.id));
+      if (selectedSongId === song.id) setSelectedSongId(null);
+    } catch (e) {
+      console.error(e);
+      alert("Не удалось удалить песню. Попробуйте ещё раз.");
+    }
+  };
+
   useEffect(() => {
     if (!ready || !roomId || !selectedSongId) return;
     const myVoteRef = doc(dbRef.current, "rooms", roomId, "songs", selectedSongId, "votes", myUid);
@@ -503,29 +529,29 @@ export default function App() {
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900 pb-24 sm:pb-0">
       <div className="mx-auto max-w-7xl px-3 sm:px-4 py-4 sm:py-6">
-        {/* шапка */}
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-col gap-1">
-            <div className="text-[10px] uppercase tracking-wide text-neutral-500">Комната</div>
-            <div className="flex items-center gap-2 flex-wrap">
-              {/* крошечный код */}
-              <div className="font-mono text-[11px] text-neutral-400">{roomId}</div>
-              {activeSong && (
-                <span className="rounded-xl bg-green-600 text-white px-4 py-2 text-sm sm:text-base font-semibold inline-flex items-center gap-1 shadow-sm">
-                  <span>{activeFlag}</span>
-                  <span>Сейчас: {activeCountry || activeSong.name}</span>
-                </span>
-              )}
+        {/* ШАПКА */}
+        <div className="mb-4 flex items-start justify-between gap-3">
+          {/* слева — текст */}
+          <div className="flex-1">
+            {/* Комната + код в одну строку */}
+            <div className="text-[12px] sm:text-xs uppercase tracking-wide text-neutral-500">
+              Комната <span className="normal-case font-mono text-neutral-600">{roomId}</span>
             </div>
-            {/* имя крупнее */}
-            <div className="text-base sm:text-lg text-neutral-800">
-              <span className="text-neutral-600">Вы:</span>{" "}
-              <span className="font-semibold">{displayName || "Без имени"}</span>
+            {/* Имя крупнее */}
+            <div className="mt-1 text-lg sm:text-xl text-neutral-900">
+              Вы: <span className="font-semibold">{displayName || "Без имени"}</span>
             </div>
+            {/* Плашка «Сейчас» ниже имени */}
+            {activeSong && (
+              <div className="mt-2 inline-flex items-center gap-2 rounded-xl bg-green-600 px-4 py-2 text-base sm:text-sm font-semibold text-white">
+                <span>{activeFlag}</span>
+                <span>Сейчас: {activeCountry || activeSong.name}</span>
+              </div>
+            )}
           </div>
 
-          {/* справа (и на мобилках — прижать к правому краю) */}
-          <div className="flex items-center gap-3 self-end sm:self-auto">
+          {/* справа — большой аватар */}
+          <div className="shrink-0 self-start">
             <input
               type="file"
               accept="image/*"
@@ -536,26 +562,13 @@ export default function App() {
             <button
               onClick={onClickAvatar}
               title="Загрузить аватар"
-              className="relative h-14 w-14 sm:h-12 sm:w-12 rounded-full bg-black flex items-center justify-center overflow-hidden border border-neutral-700"
+              className="relative h-20 w-20 sm:h-14 sm:w-14 rounded-full bg-black flex items-center justify-center overflow-hidden border border-neutral-700"
             >
               {myParticipant?.photoData ? (
                 <img alt="avatar" src={myParticipant.photoData} className="h-full w-full object-cover" />
               ) : (
-                <span className="text-white text-xl">📷</span>
+                <span className="text-white text-2xl">📷</span>
               )}
-            </button>
-
-            <button
-              onClick={() => setEditingCriteria(true)}
-              className="hidden sm:inline-block rounded-xl border border-neutral-300 bg-white px-3 py-2 text-xs shadow-sm hover:bg-neutral-100"
-            >
-              Редактировать критерии
-            </button>
-            <button
-              onClick={() => setStep("gate")}
-              className="hidden sm:inline-block rounded-xl border border-neutral-300 bg-white px-3 py-2 text-xs shadow-sm hover:bg-neutral-100"
-            >
-              Сменить комнату
             </button>
           </div>
         </div>
@@ -576,9 +589,9 @@ export default function App() {
           </button>
         </div>
 
-        {/* сетка */}
+        {/* СЕТКА */}
         <div className="grid gap-4 sm:gap-6 xl:grid-cols-3">
-          {/* Песни */}
+          {/* ПЕСНИ */}
           <div className="order-1 xl:order-none xl:col-span-1 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-lg font-semibold">Песни</h2>
@@ -661,6 +674,7 @@ export default function App() {
                           {s.name}
                         </button>
                         <div className="flex items-center gap-2">
+                          {/* сделать активной / активная */}
                           {isActive ? (
                             <span className="rounded-full bg-green-600 px-2 py-1 text-xs font-semibold text-white">
                               Активная
@@ -674,6 +688,14 @@ export default function App() {
                               Сделать активной
                             </button>
                           )}
+                          {/* удалить */}
+                          <button
+                            onClick={() => deleteSong(s)}
+                            className="rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs hover:bg-red-50"
+                            title="Удалить песню"
+                          >
+                            🗑️
+                          </button>
                         </div>
                       </div>
                     );
@@ -688,7 +710,7 @@ export default function App() {
             )}
           </div>
 
-          {/* Критерии */}
+          {/* КРИТЕРИИ */}
           <div className="order-2 xl:order-none xl:col-span-2 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
             <div className="mb-3">
               <h2 className="text-lg font-semibold">
@@ -724,7 +746,7 @@ export default function App() {
               ))}
             </div>
 
-            {/* верхняя панель действий (desktop) */}
+            {/* панель действий (desktop) */}
             <div className="mt-4 hidden sm:flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="text-sm text-neutral-700 flex items-center gap-2">
                 <span>Ваша средняя сейчас:</span>
@@ -742,195 +764,38 @@ export default function App() {
             </div>
           </div>
 
-          {/* Участники */}
-          <div className="order-3 xl:order-none xl:col-span-2 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Участники ({participants.length})</h2>
-            </div>
+          {/* УЧАСТНИКИ */}
+          <ParticipantsBlock
+            participants={participants}
+            selectedParticipantId={selectedParticipantId}
+            setSelectedParticipantId={setSelectedParticipantId}
+            participantRows={participantRows}
+            criteria={criteria}
+          />
 
-            <div className="mb-3 flex flex-wrap gap-2">
-              {participants.map((p) => (
-                <span
-                  key={p.id}
-                  className={`inline-flex items-center gap-2 rounded-xl px-2 py-1 text-sm sm:text-base ${
-                    selectedParticipantId === p.id ? "bg-black text-white" : "bg-neutral-100 text-neutral-800"
-                  }`}
-                  onClick={() => setSelectedParticipantId(p.id)}
-                  role="button"
-                  title={p.name || "Без имени"}
-                >
-                  <span className="inline-block h-5 w-5 rounded-full overflow-hidden bg-neutral-800">
-                    {p.photoData ? (
-                      <img src={p.photoData} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      <span className="block h-full w-full" />
-                    )}
-                  </span>
-                  <span className="truncate max-w-[140px] sm:max-w-[220px]">{p.name || "Без имени"}</span>
-                </span>
-              ))}
-              {participants.length === 0 && <span className="text-xs text-neutral-500">Ещё никто не зашёл</span>}
-            </div>
-
-            {/* мобайл: карточки */}
-            <div className="sm:hidden space-y-2">
-              {[...participantRows]
-                .sort((a, b) => (b.sum || 0) - (a.sum || 0))
-                .map((r) => (
-                  <div key={r.songId} className="rounded-xl border border-neutral-200 bg-white p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="font-medium text-sm">{r.songName}</div>
-                      <Pill>{fmt1(r.avg || 0)}</Pill>
-                    </div>
-                    <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-                      {criteria.map((c, i) => (
-                        <div key={i} className="flex items-center justify-between gap-2">
-                          <span className="text-neutral-500 truncate">{c}</span>
-                          <span className="font-medium">{r.scores[i] != null ? r.scores[i] : "—"}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mt-2 text-[11px] text-neutral-500">
-                      Сумма: <span className="font-semibold text-neutral-700">{r.sum || 0}</span>
-                    </div>
-                  </div>
-                ))}
-              {participantRows.length === 0 && (
-                <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
-                  Нет данных
-                </div>
-              )}
-            </div>
-
-            {/* десктоп: таблица */}
-            <div className="hidden sm:block overflow-x-auto">
-              <table className="min-w-full divide-y divide-neutral-200">
-                <thead>
-                  <tr className="text-xs text-neutral-600">
-                    <th className="px-3 py-2 text-left">Песня</th>
-                    <th className="px-3 py-2 text-left">Средн.</th>
-                    {criteria.map((c, i) => (
-                      <th key={i} className="px-3 py-2 text-left">{c}</th>
-                    ))}
-                    <th className="px-3 py-2 text-left">Сумма</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-100">
-                  {[...participantRows]
-                    .sort((a, b) => (b.sum || 0) - (a.sum || 0))
-                    .map((r) => (
-                      <tr key={r.songId} className="text-sm">
-                        <td className="px-3 py-2 font-medium">{r.songName}</td>
-                        <td className="px-3 py-2"><Pill>{fmt1(r.avg || 0)}</Pill></td>
-                        {r.scores.map((x, i) => (
-                          <td key={i} className="px-3 py-2">{x != null ? x : "—"}</td>
-                        ))}
-                        <td className="px-3 py-2">{r.sum || 0}</td>
-                      </tr>
-                    ))}
-                  {participantRows.length === 0 && (
-                    <tr><td className="px-3 py-2 text-xs text-neutral-500">Нет данных</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Итоги по всем песням */}
+          {/* ИТОГИ */}
           <ScoreboardWrap cls="order-4 xl:order-none xl:col-span-2">
             <Scoreboard db={dbRef} roomId={roomId} criteria={criteria} />
           </ScoreboardWrap>
 
-          {/* Топ-10 */}
-          <div className="order-5 xl:order-none xl:col-span-1 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-            <h2 className="mb-3 text-lg font-semibold">Топ-10 (средняя оценка)</h2>
-            {topRows.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
-                Пока нет данных
-              </div>
-            ) : (
-              <ol className="space-y-1">
-                {[...topRows]
-                  .sort((a, b) => b.avgAll - a.avgAll)
-                  .slice(0, 10)
-                  .map((r, idx) => (
-                    <li key={r.id} className="flex items-center justify-between rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
-                      <span className="font-semibold">{idx + 1}. {r.name}</span>
-                      <Pill>{fmt1(r.avgAll)}</Pill>
-                    </li>
-                  ))}
-              </ol>
-            )}
-          </div>
+          {/* ТОП-10 */}
+          <Top10Block topRows={topRows} />
         </div>
 
-        {/* модалка критериев */}
+        {/* Модалка критериев */}
         {editingCriteria && (
-          <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4">
-            <div className="w-full max-w-xl rounded-2xl border border-neutral-200 bg-white p-4 shadow-xl">
-              <h3 className="mb-3 text-lg font-semibold">Редактировать критерии</h3>
-
-              <div className="space-y-2 max-h-[60vh] overflow-auto pr-1">
-                {criteriaDraft.map((val, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <span className="w-6 text-xs text-neutral-500">{i + 1}.</span>
-                    <input
-                      className="flex-1 rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none ring-neutral-400 focus:ring"
-                      value={val}
-                      onChange={(e) =>
-                        setCriteriaDraft((prev) => prev.map((x, idx) => (idx === i ? e.target.value : x)))
-                      }
-                      maxLength={40}
-                    />
-                    <button
-                      onClick={() => removeCriterionDraft(i)}
-                      className="rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs hover:bg-neutral-100"
-                    >
-                      Удалить
-                    </button>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-3 flex items-center justify-between">
-                <button
-                  onClick={addCriterionDraft}
-                  disabled={criteriaDraft.length >= MAX_CRITERIA}
-                  className={`rounded-xl px-3 py-2 text-xs font-semibold ${
-                    criteriaDraft.length >= MAX_CRITERIA
-                      ? "bg-neutral-200 text-neutral-500"
-                      : "bg-black text-white hover:bg-neutral-800"
-                  }`}
-                >
-                  + Добавить критерий
-                </button>
-                <div className="text-[11px] text-neutral-500">
-                  {criteriaDraft.length}/{MAX_CRITERIA}
-                </div>
-              </div>
-
-              <div className="mt-4 flex justify-end gap-2">
-                <button
-                  onClick={() => {
-                    setCriteriaDraft(criteria);
-                    setEditingCriteria(false);
-                  }}
-                  className="rounded-xl border border-neutral-300 bg-white px-4 py-2 text-sm hover:bg-neutral-100"
-                >
-                  Отмена
-                </button>
-                <button
-                  onClick={saveCriteria}
-                  className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:bg-neutral-800"
-                >
-                  Сохранить
-                </button>
-              </div>
-              <div className="mt-2 text-[11px] text-neutral-500">
-                * Минимум один критерий. Средние считаются по существующим позициям.
-              </div>
-            </div>
-          </div>
+          <CriteriaModal
+            criteria={criteria}
+            criteriaDraft={criteriaDraft}
+            setCriteriaDraft={setCriteriaDraft}
+            onCancel={() => {
+              setCriteriaDraft(criteria);
+              setEditingCriteria(false);
+            }}
+            onSave={saveCriteria}
+            onAdd={addCriterionDraft}
+            onRemove={removeCriterionDraft}
+          />
         )}
 
         <footer className="mt-6 text-center text-xs text-neutral-400">
@@ -938,7 +803,7 @@ export default function App() {
         </footer>
       </div>
 
-      {/* мобильная панель */}
+      {/* Мобайл-панель */}
       <div className="sm:hidden fixed inset-x-0 bottom-0 z-40 border-t border-neutral-200 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/70">
         <div className="mx-auto max-w-7xl px-3 py-3 flex items-center justify-between gap-3">
           <div className="text-sm text-neutral-700 flex items-center gap-2">
@@ -960,10 +825,138 @@ export default function App() {
   );
 }
 
+/* ===== Вспомогательные блоки ===== */
+
+function ParticipantsBlock({
+  participants,
+  selectedParticipantId,
+  setSelectedParticipantId,
+  participantRows,
+  criteria,
+}) {
+  return (
+    <div className="order-3 xl:order-none xl:col-span-2 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Участники ({participants.length})</h2>
+      </div>
+
+      <div className="mb-3 flex flex-wrap gap-2">
+        {participants.map((p) => (
+          <span
+            key={p.id}
+            className={`inline-flex items-center gap-2 rounded-xl px-2 py-1 text-sm sm:text-base ${
+              selectedParticipantId === p.id ? "bg-black text-white" : "bg-neutral-100 text-neutral-800"
+            }`}
+            onClick={() => setSelectedParticipantId(p.id)}
+            role="button"
+            title={p.name || "Без имени"}
+          >
+            <span className="inline-block h-5 w-5 rounded-full overflow-hidden bg-neutral-800">
+              {p.photoData ? (
+                <img src={p.photoData} alt="" className="h-full w-full object-cover" />
+              ) : (
+                <span className="block h-full w-full" />
+              )}
+            </span>
+            <span className="truncate max-w-[140px] sm:max-w-[220px]">{p.name || "Без имени"}</span>
+          </span>
+        ))}
+        {participants.length === 0 && <span className="text-xs text-neutral-500">Ещё никто не зашёл</span>}
+      </div>
+
+      {/* мобайл: карточки */}
+      <div className="sm:hidden space-y-2">
+        {[...participantRows]
+          .sort((a, b) => (b.sum || 0) - (a.sum || 0))
+          .map((r) => (
+            <div key={r.songId} className="rounded-xl border border-neutral-200 bg-white p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-medium text-sm">{r.songName}</div>
+                <Pill>{fmt1(r.avg || 0)}</Pill>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                {criteria.map((c, i) => (
+                  <div key={i} className="flex items-center justify-between gap-2">
+                    <span className="text-neutral-500 truncate">{c}</span>
+                    <span className="font-medium">{r.scores[i] != null ? r.scores[i] : "—"}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 text-[11px] text-neutral-500">
+                Сумма: <span className="font-semibold text-neutral-700">{r.sum || 0}</span>
+              </div>
+            </div>
+          ))}
+        {participantRows.length === 0 && (
+          <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
+            Нет данных
+          </div>
+        )}
+      </div>
+
+      {/* десктоп: таблица */}
+      <div className="hidden sm:block overflow-x-auto">
+        <table className="min-w-full divide-y divide-neutral-200">
+          <thead>
+            <tr className="text-xs text-neutral-600">
+              <th className="px-3 py-2 text-left">Песня</th>
+              <th className="px-3 py-2 text-left">Средн.</th>
+              {criteria.map((c, i) => (
+                <th key={i} className="px-3 py-2 text-left">{c}</th>
+              ))}
+              <th className="px-3 py-2 text-left">Сумма</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-100">
+            {[...participantRows]
+              .sort((a, b) => (b.sum || 0) - (a.sum || 0))
+              .map((r) => (
+                <tr key={r.songId} className="text-sm">
+                  <td className="px-3 py-2 font-medium">{r.songName}</td>
+                  <td className="px-3 py-2"><Pill>{fmt1(r.avg || 0)}</Pill></td>
+                  {r.scores.map((x, i) => (
+                    <td key={i} className="px-3 py-2">{x != null ? x : "—"}</td>
+                  ))}
+                  <td className="px-3 py-2">{r.sum || 0}</td>
+                </tr>
+              ))}
+            {participantRows.length === 0 && (
+              <tr><td className="px-3 py-2 text-xs text-neutral-500">Нет данных</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function ScoreboardWrap({ children, cls }) {
   return <div className={`${cls} rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm`}>{children}</div>;
 }
-
+function Top10Block({ topRows }) {
+  return (
+    <div className="order-5 xl:order-none xl:col-span-1 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+      <h2 className="mb-3 text-lg font-semibold">Топ-10 (средняя оценка)</h2>
+      {topRows.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-500">
+          Пока нет данных
+        </div>
+      ) : (
+        <ol className="space-y-1">
+          {[...topRows]
+            .sort((a, b) => b.avgAll - a.avgAll)
+            .slice(0, 10)
+            .map((r, idx) => (
+              <li key={r.id} className="flex items-center justify-between rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
+                <span className="font-semibold">{idx + 1}. {r.name}</span>
+                <Pill>{fmt1(r.avgAll)}</Pill>
+              </li>
+            ))}
+        </ol>
+      )}
+    </div>
+  );
+}
 function randomRoomCode() {
   const adj = ["loud", "epic", "fresh", "brave", "lucky", "gold", "neon", "vivid"];
   const noun = ["eurovision", "contest", "party", "song", "final", "semifinal"];
@@ -1087,5 +1080,73 @@ function Scoreboard({ db, roomId, criteria }) {
         </>
       )}
     </>
+  );
+}
+
+/* ===== Модалка критериев ===== */
+function CriteriaModal({ criteria, criteriaDraft, setCriteriaDraft, onCancel, onSave, onAdd, onRemove }) {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4">
+      <div className="w-full max-w-xl rounded-2xl border border-neutral-200 bg-white p-4 shadow-xl">
+        <h3 className="mb-3 text-lg font-semibold">Редактировать критерии</h3>
+
+        <div className="space-y-2 max-h-[60vh] overflow-auto pr-1">
+          {criteriaDraft.map((val, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <span className="w-6 text-xs text-neutral-500">{i + 1}.</span>
+              <input
+                className="flex-1 rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none ring-neutral-400 focus:ring"
+                value={val}
+                onChange={(e) =>
+                  setCriteriaDraft((prev) => prev.map((x, idx) => (idx === i ? e.target.value : x)))
+                }
+                maxLength={40}
+              />
+              <button
+                onClick={() => onRemove(i)}
+                className="rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs hover:bg-neutral-100"
+              >
+                Удалить
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-3 flex items-center justify-between">
+          <button
+            onClick={onAdd}
+            disabled={criteriaDraft.length >= MAX_CRITERIA}
+            className={`rounded-xl px-3 py-2 text-xs font-semibold ${
+              criteriaDraft.length >= MAX_CRITERIA
+                ? "bg-neutral-200 text-neutral-500"
+                : "bg-black text-white hover:bg-neutral-800"
+            }`}
+          >
+            + Добавить критерий
+          </button>
+          <div className="text-[11px] text-neutral-500">
+            {criteriaDraft.length}/{MAX_CRITERIA}
+          </div>
+        </div>
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-xl border border-neutral-300 bg-white px-4 py-2 text-sm hover:bg-neutral-100"
+          >
+            Отмена
+          </button>
+          <button
+            onClick={onSave}
+            className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:bg-neutral-800"
+          >
+            Сохранить
+          </button>
+        </div>
+        <div className="mt-2 text-[11px] text-neutral-500">
+          * Минимум один критерий. Средние считаются по существующим позициям.
+        </div>
+      </div>
+    </div>
   );
 }
