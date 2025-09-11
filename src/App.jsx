@@ -16,11 +16,12 @@ import {
 
 /**
  * 🎶 Song Contest Rater — Realtime (Firebase)
- * Mobile-first адаптация:
- * - Нижняя фикс-панель на телефоне: средняя (пилюля) + «Оценить»
- * - Сводка по участнику: карточки на мобильном, таблица на десктопе
- * - Итоги по всем песням: список на мобильном, таблица на десктопе
- * - Везде средние в чёрной «пилюле», округление до десятых
+ * - Переменное число критериев (добавлять/переименовывать/удалять, минимум 1)
+ * - Голоса не теряются: считаем только по текущим критериям
+ * - Слайдеры 1–10, «Оценить», средние в чёрной «пилюле», округление до десятых
+ * - Сводка по участнику (карточки на мобайле / таблица на десктопе)
+ * - Итоги по всем песням + Топ-10 — по средней
+ * - Mobile-first: нижняя фикс-панель на телефоне с «Оценить»
  */
 
 const FIREBASE_CONFIG = {
@@ -46,6 +47,8 @@ const DEFAULT_CRITERIA = [
   "Эмоции",
 ];
 
+const MAX_CRITERIA = 20;
+
 const clamp = (n, min = 1, max = 10) => Math.max(min, Math.min(max, Number(n)));
 const fmt1 = (n) => (isFinite(n) ? Number(n).toFixed(1).replace(".", ",") : "0,0");
 
@@ -67,8 +70,35 @@ const uid = () =>
   (localStorage.setItem("songRater.uid", crypto.randomUUID()),
   localStorage.getItem("songRater.uid"));
 
+/** Безопасные средние:
+ * perCritAvg[i] — среднее по критерию i только среди голосов, где он заполнен;
+ * avgAll — среднее из тех perCritAvg, у которых есть хотя бы один голос. */
+function computeAveragesFromVotes(votes, criteriaLen) {
+  const K = Math.max(1, criteriaLen);
+  const perSum = Array(K).fill(0);
+  const perCnt = Array(K).fill(0);
+
+  votes.forEach((v) => {
+    if (!v || !Array.isArray(v.scores)) return;
+    for (let i = 0; i < K; i++) {
+      const x = v.scores[i];
+      if (x != null) {
+        perSum[i] += clamp(x);
+        perCnt[i] += 1;
+      }
+    }
+  });
+
+  const perCritAvg = perSum.map((s, i) => (perCnt[i] ? s / perCnt[i] : 0));
+  const valid = perCritAvg.filter((_, i) => perCnt[i] > 0);
+  const avgAll = valid.length ? valid.reduce((a, b) => a + b, 0) / valid.length : 0;
+
+  return { perCritAvg, avgAll };
+}
+
 export default function App() {
   const dbRef = useRef(null);
+  const criteriaRef = useRef(DEFAULT_CRITERIA);
   const [ready, setReady] = useState(false);
 
   // вход
@@ -89,12 +119,12 @@ export default function App() {
   const [editingCriteria, setEditingCriteria] = useState(false);
   const [criteriaDraft, setCriteriaDraft] = useState(DEFAULT_CRITERIA);
 
-  // мои оценки (локально)
-  const [myScores, setMyScores] = useState(() => Array(10).fill(5));
+  // мои оценки (локально), длина = criteria.length
+  const [myScores, setMyScores] = useState(() => Array(DEFAULT_CRITERIA.length).fill(5));
   const [saving, setSaving] = useState(false);
 
   // агрегаты по выбранной песне
-  const [agg, setAgg] = useState({ count: 0, avgAll: 0, perCritAvg: Array(10).fill(0) });
+  const [agg, setAgg] = useState({ count: 0, avgAll: 0, perCritAvg: Array(DEFAULT_CRITERIA.length).fill(0) });
 
   // сводка по участнику
   const [selectedParticipantId, setSelectedParticipantId] = useState("");
@@ -108,6 +138,18 @@ export default function App() {
     dbRef.current = initFirebase();
     setReady(true);
   }, []);
+
+  // При смене criteria — подгоняем локальные оценки к новой длине
+  useEffect(() => {
+    const K = Math.max(1, criteria.length);
+    criteriaRef.current = criteria;
+    setMyScores((prev) => {
+      const arr = Array(K).fill(5);
+      for (let i = 0; i < K; i++) arr[i] = clamp(prev[i] ?? 5);
+      return arr;
+    });
+    setAgg((prev) => ({ ...prev, perCritAvg: Array(K).fill(0) }));
+  }, [criteria]);
 
   const createRoomIfMissing = async (db, rid, name) => {
     const rDoc = doc(db, "rooms", rid);
@@ -138,17 +180,13 @@ export default function App() {
     const unsubRoom = onSnapshot(doc(db, "rooms", rid), (s) => {
       const data = s.data();
       const nextCriteria =
-        data?.criteria && Array.isArray(data.criteria) && data.criteria.length === 10
-          ? data.criteria
+        data?.criteria && Array.isArray(data.criteria) && data.criteria.length >= 1
+          ? data.criteria.slice(0, MAX_CRITERIA)
           : DEFAULT_CRITERIA;
       setCriteria(nextCriteria);
+      criteriaRef.current = nextCriteria;
       setCriteriaDraft(nextCriteria);
       setActiveSongId(data?.activeSongId || null);
-      setMyScores((prev) => {
-        const arr = Array(10).fill(5);
-        for (let i = 0; i < 10; i++) arr[i] = clamp(prev[i] ?? 5);
-        return arr;
-      });
     });
 
     const unsubParts = onSnapshot(collection(db, "rooms", rid, "participants"), (qs) => {
@@ -164,23 +202,17 @@ export default function App() {
       setSelectedSongId((prev) => prev || prefer?.id || null);
     });
 
-    // Топ-10: подписки на список песен и их /votes
+    // Топ-10: подписки на список песен и их /votes — средняя по текущему числу критериев
     const unsubSongsForTop = onSnapshot(
       query(collection(db, "rooms", rid, "songs"), orderBy("order", "asc")),
       (qs) => {
-        const songs = qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+        const listSongs = qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
 
-        // Подписки на новые песни
-        songs.forEach((song) => {
+        listSongs.forEach((song) => {
           if (topVotesUnsubsRef.current[song.id]) return;
           const u = onSnapshot(collection(db, "rooms", rid, "songs", song.id, "votes"), (vs) => {
             const votes = vs.docs.map((d) => d.data());
-            const count = votes.length;
-            const sumAll = votes.reduce((acc, v) => {
-              if (!Array.isArray(v.scores)) return acc;
-              return acc + v.scores.reduce((a, b) => a + clamp(b), 0); // 10..100 per vote
-            }, 0);
-            const avgAll = count > 0 ? sumAll / (count * 10) : 0; // средняя по всем критериям и участникам
+            const { avgAll } = computeAveragesFromVotes(votes, Math.max(1, criteriaRef.current.length));
             setTopRows((prev) => {
               const idx = prev.findIndex((r) => r.id === song.id);
               const nextRow = { id: song.id, name: song.name, avgAll };
@@ -194,7 +226,7 @@ export default function App() {
         });
 
         // Снимаем подписки с удалённых песен
-        const existing = new Set(songs.map((s) => s.id));
+        const existing = new Set(listSongs.map((s) => s.id));
         Object.entries(topVotesUnsubsRef.current).forEach(([songId, u]) => {
           if (!existing.has(songId)) {
             u && u();
@@ -244,10 +276,11 @@ export default function App() {
     const myVoteRef = doc(dbRef.current, "rooms", roomId, "songs", selectedSongId, "votes", myUid);
     const unsubMine = onSnapshot(myVoteRef, (s) => {
       const data = s.data();
-      if (data && Array.isArray(data.scores) && data.scores.length) {
-        setMyScores(() => {
-          const arr = Array(10).fill(5);
-          for (let i = 0; i < 10; i++) arr[i] = clamp(data.scores[i] ?? 5);
+      if (data && Array.isArray(data.scores)) {
+        const K = Math.max(1, criteria.length);
+        setMyScores((prev) => {
+          const arr = Array(K).fill(5);
+          for (let i = 0; i < K; i++) arr[i] = clamp(data.scores[i] ?? prev[i] ?? 5);
           return arr;
         });
       }
@@ -257,12 +290,8 @@ export default function App() {
       collection(dbRef.current, "rooms", roomId, "songs", selectedSongId, "votes"),
       (qs) => {
         const votes = qs.docs.map((d) => d.data());
-        const count = votes.length;
-        const perCritSum = Array(10).fill(0);
-        votes.forEach((v) => v.scores?.forEach((x, i) => (perCritSum[i] += clamp(x))));
-        const perCritAvg = perCritSum.map((s) => (count ? s / count : 0));
-        const avgAll = perCritAvg.length ? perCritAvg.reduce((a, b) => a + b, 0) / perCritAvg.length : 0;
-        setAgg({ count, perCritAvg, avgAll });
+        const { perCritAvg, avgAll } = computeAveragesFromVotes(votes, Math.max(1, criteria.length));
+        setAgg({ count: votes.length, perCritAvg, avgAll });
       }
     );
 
@@ -270,7 +299,7 @@ export default function App() {
       unsubMine?.();
       unsubAgg?.();
     };
-  }, [ready, roomId, selectedSongId]);
+  }, [ready, roomId, selectedSongId, criteria.length]);
 
   // сводка выбранного участника
   useEffect(() => {
@@ -278,18 +307,18 @@ export default function App() {
       setParticipantRows([]);
       return;
     }
+    const K = Math.max(1, criteria.length);
     const unsubs = songs.map((song) =>
       onSnapshot(doc(dbRef.current, "rooms", roomId, "songs", song.id, "votes", selectedParticipantId), (s) => {
         const data = s.data();
-        let scores = Array(10).fill(null);
-        if (data && Array.isArray(data.scores)) {
-          scores = Array(10)
-            .fill(null)
-            .map((_, i) => (data.scores[i] != null ? clamp(data.scores[i]) : null));
-        }
+        const scores = Array(K)
+          .fill(null)
+          .map((_, i) => (data && Array.isArray(data.scores) && data.scores[i] != null ? clamp(data.scores[i]) : null));
+
         const filled = scores.filter((x) => x != null);
         const avg = filled.length ? filled.reduce((a, b) => a + (b || 0), 0) / filled.length : 0;
-        const sum = scores.reduce((a, b) => a + (b || 0), 0);
+        const sum = filled.length ? filled.reduce((a, b) => a + (b || 0), 0) : 0;
+
         setParticipantRows((prev) => {
           const idx = prev.findIndex((r) => r.songId === song.id);
           const next = { songId: song.id, songName: song.name, scores, avg, sum };
@@ -301,16 +330,20 @@ export default function App() {
       })
     );
     return () => unsubs.forEach((u) => u && u());
-  }, [ready, roomId, selectedParticipantId, songs]);
+  }, [ready, roomId, selectedParticipantId, songs, criteria.length]);
 
   const submitVote = async () => {
     if (!ready || !roomId || !selectedSongId) return;
     try {
       setSaving(true);
+      const K = Math.max(1, criteria.length);
+      const trimmed = Array(K)
+        .fill(0)
+        .map((_, i) => clamp(myScores[i] ?? 5));
       await setDoc(
         doc(dbRef.current, "rooms", roomId, "songs", selectedSongId, "votes", myUid),
         {
-          scores: myScores.map((n) => clamp(n)),
+          scores: trimmed,
           name: displayName || "Без имени",
           updatedAt: serverTimestamp(),
         },
@@ -321,18 +354,27 @@ export default function App() {
     }
   };
 
+  // редактор критериев (add/remove/save)
+  const addCriterionDraft = () => {
+    if (criteriaDraft.length >= MAX_CRITERIA) return;
+    setCriteriaDraft((prev) => [...prev, `Критерий ${prev.length + 1}`]);
+  };
+  const removeCriterionDraft = (idx) => {
+    setCriteriaDraft((prev) => prev.filter((_, i) => i !== idx));
+  };
   const saveCriteria = async () => {
-    const cleaned = criteriaDraft.map((s) => String(s || "").slice(0, 40));
-    while (cleaned.length < 10) cleaned.push("");
+    let cleaned = criteriaDraft.map((s) => String(s || "").trim()).filter(Boolean).slice(0, MAX_CRITERIA);
+    if (cleaned.length === 0) cleaned = ["Оценка"]; // минимум 1
     if (!roomId) return;
-    await updateDoc(doc(dbRef.current, "rooms", roomId), { criteria: cleaned.slice(0, 10) });
+    await updateDoc(doc(dbRef.current, "rooms", roomId), { criteria: cleaned });
     setEditingCriteria(false);
   };
 
-  const myAvg = useMemo(
-    () => (myScores.length ? myScores.reduce((a, b) => a + b, 0) / myScores.length : 0),
-    [myScores]
-  );
+  const myAvg = useMemo(() => {
+    const filled = myScores.filter((x) => x != null);
+    return filled.length ? filled.reduce((a, b) => a + b, 0) / filled.length : 0;
+  }, [myScores]);
+
   const activeSong = songs.find((s) => s.id === activeSongId) || null;
 
   if (!ready) return <div className="p-6 text-sm text-neutral-600">Загрузка…</div>;
@@ -550,7 +592,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Топ-10 по средней оценке (он и так мобайл-дружественный) */}
+            {/* Топ-10 по средней оценке */}
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
               <h2 className="mb-3 text-lg font-semibold">Топ-10 (средняя оценка)</h2>
               {topRows.length === 0 ? (
@@ -587,7 +629,7 @@ export default function App() {
                     <div className="mb-1 flex items-center justify-between">
                       <span className="text-sm font-medium text-neutral-800">{label}</span>
                       <span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-neutral-700">
-                        {myScores[i]}
+                        {myScores[i] ?? "—"}
                       </span>
                     </div>
                     <input
@@ -595,7 +637,7 @@ export default function App() {
                       min={1}
                       max={10}
                       step={1}
-                      value={myScores[i]}
+                      value={myScores[i] ?? 5}
                       onChange={(e) =>
                         setMyScores((prev) => prev.map((v, idx) => (idx === i ? clamp(e.target.value) : v)))
                       }
@@ -651,26 +693,51 @@ export default function App() {
           </div>
         </div>
 
-        {/* Модалка редактирования критериев */}
+        {/* Модалка редактирования критериев (добавить/удалить/переименовать) */}
         {editingCriteria && (
           <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4">
             <div className="w-full max-w-xl rounded-2xl border border-neutral-200 bg-white p-4 shadow-xl">
               <h3 className="mb-3 text-lg font-semibold">Редактировать критерии</h3>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+
+              <div className="space-y-2 max-h-[60vh] overflow-auto pr-1">
                 {criteriaDraft.map((val, i) => (
-                  <div key={i} className="space-y-1">
-                    <div className="text-xs text-neutral-500">Критерий {i + 1}</div>
+                  <div key={i} className="flex items-center gap-2">
+                    <span className="w-6 text-xs text-neutral-500">{i + 1}.</span>
                     <input
-                      className="w-full rounded-xl border border-neutral-300 px-3 py-3 text-sm outline-none ring-neutral-400 focus:ring"
+                      className="flex-1 rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none ring-neutral-400 focus:ring"
                       value={val}
                       onChange={(e) =>
                         setCriteriaDraft((prev) => prev.map((x, idx) => (idx === i ? e.target.value : x)))
                       }
                       maxLength={40}
                     />
+                    <button
+                      onClick={() => removeCriterionDraft(i)}
+                      className="rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs hover:bg-neutral-100"
+                    >
+                      Удалить
+                    </button>
                   </div>
                 ))}
               </div>
+
+              <div className="mt-3 flex items-center justify-between">
+                <button
+                  onClick={addCriterionDraft}
+                  disabled={criteriaDraft.length >= MAX_CRITERIA}
+                  className={`rounded-xl px-3 py-2 text-xs font-semibold ${
+                    criteriaDraft.length >= MAX_CRITERIA
+                      ? "bg-neutral-200 text-neutral-500"
+                      : "bg-black text-white hover:bg-neutral-800"
+                  }`}
+                >
+                  + Добавить критерий
+                </button>
+                <div className="text-[11px] text-neutral-500">
+                  {criteriaDraft.length}/{MAX_CRITERIA}
+                </div>
+              </div>
+
               <div className="mt-4 flex justify-end gap-2">
                 <button
                   onClick={() => {
@@ -689,7 +756,7 @@ export default function App() {
                 </button>
               </div>
               <div className="mt-2 text-[11px] text-neutral-500">
-                * Меняются только названия (всегда 10). Старые голоса остаются.
+                * Минимум один критерий. Старые голоса учитываются только по существующим позициям.
               </div>
             </div>
           </div>
@@ -765,17 +832,11 @@ function Scoreboard({ db, roomId, criteria }) {
             collection(db.current, "rooms", roomId, "songs", song.id, "votes"),
             (vs) => {
               const votes = vs.docs.map((d) => d.data());
-              const count = votes.length;
-              const perCritSum = Array(criteria.length).fill(0);
-              votes.forEach((v) =>
-                v.scores?.forEach((x, i) => (perCritSum[i] += Math.max(1, Math.min(10, Number(x)))))
-              );
-              const perCritAvg = perCritSum.map((s) => (count ? s / count : 0));
-              const avgAll = perCritAvg.length ? perCritAvg.reduce((a, b) => a + b, 0) / perCritAvg.length : 0;
+              const { perCritAvg, avgAll } = computeAveragesFromVotes(votes, Math.max(1, criteria.length));
 
               setRows((prev) => {
                 const idx = prev.findIndex((r) => r.id === song.id);
-                const nextRow = { id: song.id, name: song.name, count, avgAll, perCritAvg };
+                const nextRow = { id: song.id, name: song.name, count: votes.length, avgAll, perCritAvg };
                 if (idx === -1) return [...prev, nextRow];
                 const cp = [...prev];
                 cp[idx] = nextRow;
