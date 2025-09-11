@@ -15,14 +15,12 @@ import {
 } from "firebase/firestore";
 
 /**
- * 🎶 Song Contest Rater — Firebase
+ * Song Contest Rater — Realtime (Firebase)
  * - Флаги для любой страны (RU/EN) через Intl.DisplayNames
- * - Аватар участника (кружок справа сверху): загрузка, авто-кроп в круг, хранение в Firestore (dataURL)
- * - Мини-аватар в списке участников и в итогах
- * - «Сейчас: Страна» — зелёная крупная плашка (с флагом)
- * - Мобайл: Песни (аккордеон) → Критерии → Участники → Итоги → Топ-10
- * - ПК: слева Песни; справа Критерии/Участники/Итоги/Топ-10
- * - Переменные критерии (add/rename/delete), средняя по доступным критериям, округление до 0.1
+ * - Аватар участника: загрузка, авто-кроп в круг (dataURL в Firestore)
+ * - Плашка «Сейчас: Страна» большая и зелёная (особенно на мобилках)
+ * - Мобайл: Песни(аккордеон) → Критерии → Участники → Итоги → Топ-10
+ * - ПК: слева Песни, справа Критерии/Участники/Итоги/Топ-10
  */
 
 const FIREBASE_CONFIG = {
@@ -70,14 +68,12 @@ const uid = () =>
   (localStorage.setItem("songRater.uid", crypto.randomUUID()),
   localStorage.getItem("songRater.uid"));
 
-/** ====== ФЛАГИ ДЛЯ ЛЮБОЙ СТРАНЫ (RU/EN) ====== */
-// emoji-флаг по ISO-2
+/* ===== Флаги для любой страны (RU/EN) ===== */
 function isoFlag(iso2) {
   if (!iso2) return "";
   const A = 127397;
   return String.fromCodePoint(...iso2.toUpperCase().split("").map((c) => c.charCodeAt(0) + A));
 }
-// полный список кодов стран
 function allRegionCodes() {
   if (typeof Intl !== "undefined" && typeof Intl.supportedValuesOf === "function") {
     try {
@@ -85,7 +81,6 @@ function allRegionCodes() {
       if (Array.isArray(list) && list.length) return list;
     } catch {}
   }
-  // Фолбэк: пробуем все AA..ZZ и оставляем те, у которых есть нормальное имя
   const dn = new Intl.DisplayNames(["en"], { type: "region" });
   const out = [];
   for (let a = 65; a <= 90; a++) {
@@ -115,7 +110,7 @@ function buildCountryMap() {
 }
 function extractCountry(name) {
   if (!name) return "";
-  const parts = name.split(/—|–|-/); // em/en/-
+  const parts = name.split(/—|–|-/);
   return (parts[0] || "").trim();
 }
 function flagEmojiFromCountryName(countryName) {
@@ -126,7 +121,7 @@ function flagEmojiFromCountryName(countryName) {
   return code ? isoFlag(code) : "";
 }
 
-/** ====== АВАТАР (кроп в круг, хранение в Firestore dataURL) ====== */
+/* ===== Аватар: crop в круг и dataURL ===== */
 async function imageFileToCircleDataURL(file, size = 256) {
   const dataUrl = await new Promise((res, rej) => {
     const fr = new FileReader();
@@ -155,14 +150,13 @@ async function imageFileToCircleDataURL(file, size = 256) {
   ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
   ctx.closePath();
   ctx.clip();
-
   ctx.drawImage(img, sx, sy, s, s, 0, 0, size, size);
   ctx.restore();
 
   return canvas.toDataURL("image/png", 0.92);
 }
 
-/** ====== СРЕДНИЕ ====== */
+/* ===== Средние ===== */
 function computeAveragesFromVotes(votes, criteriaLen) {
   const K = Math.max(1, criteriaLen);
   const perSum = Array(K).fill(0);
@@ -188,19 +182,16 @@ export default function App() {
   const criteriaRef = useRef(DEFAULT_CRITERIA);
   const [ready, setReady] = useState(false);
 
-  // gate
   const [roomId, setRoomId] = useState(() => localStorage.getItem("songRater.roomId") || "");
   const [displayName, setDisplayName] = useState(() => localStorage.getItem("songRater.name") || "");
   const [step, setStep] = useState("gate");
   const myUid = uid();
 
-  // room
   const [criteria, setCriteria] = useState(DEFAULT_CRITERIA);
   const [songs, setSongs] = useState([]);
   const [activeSongId, setActiveSongId] = useState(null);
   const [participants, setParticipants] = useState([]);
 
-  // UI/local
   const [newSong, setNewSong] = useState("");
   const [selectedSongId, setSelectedSongId] = useState(null);
   const [editingCriteria, setEditingCriteria] = useState(false);
@@ -208,7 +199,6 @@ export default function App() {
   const [myScores, setMyScores] = useState(() => Array(DEFAULT_CRITERIA.length).fill(5));
   const [saving, setSaving] = useState(false);
 
-  // responsive helper (чтобы не обращаться к window в рендере)
   const [isWide, setIsWide] = useState(false);
   useEffect(() => {
     const mm = window.matchMedia("(min-width: 640px)");
@@ -218,14 +208,11 @@ export default function App() {
     return () => mm.removeEventListener("change", onChange);
   }, []);
 
-  // mobile songs accordion
   const [songsOpen, setSongsOpen] = useState(false);
 
-  // participant summary
   const [selectedParticipantId, setSelectedParticipantId] = useState("");
   const [participantRows, setParticipantRows] = useState([]);
 
-  // my participant (для аватарки)
   const myParticipant = useMemo(
     () => participants.find((p) => p.id === myUid),
     [participants, myUid]
@@ -242,15 +229,13 @@ export default function App() {
         { photoData: dataUrl, updatedAt: serverTimestamp() },
         { merge: true }
       );
-    } catch (err) {
-      console.error(err);
+    } catch {
       alert("Не удалось загрузить аватар. Попробуй другой файл.");
     } finally {
       e.target.value = "";
     }
   };
 
-  // top-10
   const [topRows, setTopRows] = useState([]);
   const topVotesUnsubsRef = useRef({});
 
@@ -279,10 +264,11 @@ export default function App() {
         activeSongId: null,
       });
     }
-    await setDoc(doc(db, "rooms", rid, "participants", myUid), {
-      name,
-      updatedAt: serverTimestamp(),
-    }, { merge: true });
+    await setDoc(
+      doc(db, "rooms", rid, "participants", myUid),
+      { name, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
   };
 
   const startRoom = async (e) => {
@@ -324,7 +310,6 @@ export default function App() {
       query(collection(db, "rooms", rid, "songs"), orderBy("order", "asc")),
       (qs) => {
         const listSongs = qs.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
-
         listSongs.forEach((song) => {
           if (topVotesUnsubsRef.current[song.id]) return;
           const u = onSnapshot(collection(db, "rooms", rid, "songs", song.id, "votes"), (vs) => {
@@ -341,7 +326,6 @@ export default function App() {
           });
           topVotesUnsubsRef.current[song.id] = u;
         });
-
         const existing = new Set(listSongs.map((s) => s.id));
         Object.entries(topVotesUnsubsRef.current).forEach(([songId, u]) => {
           if (!existing.has(songId)) {
@@ -388,7 +372,6 @@ export default function App() {
     await setRoomActiveSong(res.id);
   };
 
-  // мои сохранённые оценки (для слайдеров)
   useEffect(() => {
     if (!ready || !roomId || !selectedSongId) return;
     const myVoteRef = doc(dbRef.current, "rooms", roomId, "songs", selectedSongId, "votes", myUid);
@@ -406,7 +389,6 @@ export default function App() {
     return () => unsubMine?.();
   }, [ready, roomId, selectedSongId, criteria.length]);
 
-  // сводка выбранного участника
   useEffect(() => {
     if (!ready || !roomId || !selectedParticipantId || !songs.length) {
       setParticipantRows([]);
@@ -446,11 +428,7 @@ export default function App() {
         .map((_, i) => clamp(myScores[i] ?? 5));
       await setDoc(
         doc(dbRef.current, "rooms", roomId, "songs", selectedSongId, "votes", myUid),
-        {
-          scores: trimmed,
-          name: displayName || "Без имени",
-          updatedAt: serverTimestamp(),
-        },
+        { scores: trimmed, name: displayName || "Без имени", updatedAt: serverTimestamp() },
         { merge: true }
       );
     } finally {
@@ -458,14 +436,11 @@ export default function App() {
     }
   };
 
-  // редактор критериев
   const addCriterionDraft = () => {
     if (criteriaDraft.length >= MAX_CRITERIA) return;
     setCriteriaDraft((prev) => [...prev, `Критерий ${prev.length + 1}`]);
   };
-  const removeCriterionDraft = (idx) => {
-    setCriteriaDraft((prev) => prev.filter((_, i) => i !== idx));
-  };
+  const removeCriterionDraft = (idx) => setCriteriaDraft((prev) => prev.filter((_, i) => i !== idx));
   const saveCriteria = async () => {
     let cleaned = criteriaDraft.map((s) => String(s || "").trim()).filter(Boolean).slice(0, MAX_CRITERIA);
     if (cleaned.length === 0) cleaned = ["Оценка"];
@@ -528,26 +503,29 @@ export default function App() {
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900 pb-24 sm:pb-0">
       <div className="mx-auto max-w-7xl px-3 sm:px-4 py-4 sm:py-6">
-        {/* top bar */}
+        {/* шапка */}
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-col gap-1">
             <div className="text-[10px] uppercase tracking-wide text-neutral-500">Комната</div>
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-xl sm:text-2xl font-bold">{roomId}</h1>
+              {/* крошечный код */}
+              <div className="font-mono text-[11px] text-neutral-400">{roomId}</div>
               {activeSong && (
-                <span className="rounded-xl bg-green-600/90 text-white px-3 py-1.5 text-xs sm:text-sm font-semibold inline-flex items-center gap-1">
+                <span className="rounded-xl bg-green-600 text-white px-4 py-2 text-sm sm:text-base font-semibold inline-flex items-center gap-1 shadow-sm">
                   <span>{activeFlag}</span>
                   <span>Сейчас: {activeCountry || activeSong.name}</span>
                 </span>
               )}
             </div>
-            <div className="text-sm text-neutral-600">
-              Вы: <span className="font-semibold text-neutral-800">{displayName || "Без имени"}</span>
+            {/* имя крупнее */}
+            <div className="text-base sm:text-lg text-neutral-800">
+              <span className="text-neutral-600">Вы:</span>{" "}
+              <span className="font-semibold">{displayName || "Без имени"}</span>
             </div>
           </div>
 
-          {/* справа сверху — аватар */}
-          <div className="flex items-center gap-3">
+          {/* справа (и на мобилках — прижать к правому краю) */}
+          <div className="flex items-center gap-3 self-end sm:self-auto">
             <input
               type="file"
               accept="image/*"
@@ -558,16 +536,12 @@ export default function App() {
             <button
               onClick={onClickAvatar}
               title="Загрузить аватар"
-              className="relative h-10 w-10 sm:h-11 sm:w-11 rounded-full bg-black flex items-center justify-center overflow-hidden border border-neutral-700"
+              className="relative h-14 w-14 sm:h-12 sm:w-12 rounded-full bg-black flex items-center justify-center overflow-hidden border border-neutral-700"
             >
               {myParticipant?.photoData ? (
-                <img
-                  alt="avatar"
-                  src={myParticipant.photoData}
-                  className="h-full w-full object-cover"
-                />
+                <img alt="avatar" src={myParticipant.photoData} className="h-full w-full object-cover" />
               ) : (
-                <span className="text-white text-lg">📷</span>
+                <span className="text-white text-xl">📷</span>
               )}
             </button>
 
@@ -586,7 +560,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* кнопки на мобилке */}
+        {/* быстрые кнопки на мобилке */}
         <div className="sm:hidden mb-3 flex items-center gap-2">
           <button
             onClick={() => setEditingCriteria(true)}
@@ -602,7 +576,7 @@ export default function App() {
           </button>
         </div>
 
-        {/* ГРИД: мобайл — Песни(1) → Критерии(2) → Участники(3) → Итоги(4) → Топ-10(5) */}
+        {/* сетка */}
         <div className="grid gap-4 sm:gap-6 xl:grid-cols-3">
           {/* Песни */}
           <div className="order-1 xl:order-none xl:col-span-1 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
@@ -616,7 +590,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* выбранная песня (мобайл, когда список скрыт) */}
             {!songsOpen && !isWide && (
               <div className="mb-3 rounded-xl border border-neutral-200 bg-neutral-50 p-3 text-sm">
                 <div className="flex items-center justify-between gap-2">
@@ -643,7 +616,6 @@ export default function App() {
               </div>
             )}
 
-            {/* список песен (на ПК всегда, на мобиле по toggle) */}
             {(songsOpen || isWide) && (
               <>
                 <div className="mb-3 flex gap-2">
@@ -780,21 +752,21 @@ export default function App() {
               {participants.map((p) => (
                 <span
                   key={p.id}
-                  className={`inline-flex items-center gap-2 rounded-xl px-2 py-1 text-sm ${
+                  className={`inline-flex items-center gap-2 rounded-xl px-2 py-1 text-sm sm:text-base ${
                     selectedParticipantId === p.id ? "bg-black text-white" : "bg-neutral-100 text-neutral-800"
                   }`}
                   onClick={() => setSelectedParticipantId(p.id)}
                   role="button"
                   title={p.name || "Без имени"}
                 >
-                  <span className="inline-block h-4 w-4 rounded-full overflow-hidden bg-neutral-800">
+                  <span className="inline-block h-5 w-5 rounded-full overflow-hidden bg-neutral-800">
                     {p.photoData ? (
                       <img src={p.photoData} alt="" className="h-full w-full object-cover" />
                     ) : (
                       <span className="block h-full w-full" />
                     )}
                   </span>
-                  <span className="truncate max-w-[120px] sm:max-w-[200px]">{p.name || "Без имени"}</span>
+                  <span className="truncate max-w-[140px] sm:max-w-[220px]">{p.name || "Без имени"}</span>
                 </span>
               ))}
               {participants.length === 0 && <span className="text-xs text-neutral-500">Ещё никто не зашёл</span>}
@@ -866,7 +838,7 @@ export default function App() {
 
           {/* Итоги по всем песням */}
           <ScoreboardWrap cls="order-4 xl:order-none xl:col-span-2">
-            <Scoreboard db={dbRef} roomId={roomId} criteria={criteria} participants={participants} />
+            <Scoreboard db={dbRef} roomId={roomId} criteria={criteria} />
           </ScoreboardWrap>
 
           {/* Топ-10 */}
@@ -892,7 +864,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Модалка критериев */}
+        {/* модалка критериев */}
         {editingCriteria && (
           <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4">
             <div className="w-full max-w-xl rounded-2xl border border-neutral-200 bg-white p-4 shadow-xl">
@@ -955,7 +927,7 @@ export default function App() {
                 </button>
               </div>
               <div className="mt-2 text-[11px] text-neutral-500">
-                * Минимум один критерий. Старые голоса считаются только по существующим позициям.
+                * Минимум один критерий. Средние считаются по существующим позициям.
               </div>
             </div>
           </div>
@@ -966,7 +938,7 @@ export default function App() {
         </footer>
       </div>
 
-      {/* Мобайл-панель действий */}
+      {/* мобильная панель */}
       <div className="sm:hidden fixed inset-x-0 bottom-0 z-40 border-t border-neutral-200 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/70">
         <div className="mx-auto max-w-7xl px-3 py-3 flex items-center justify-between gap-3">
           <div className="text-sm text-neutral-700 flex items-center gap-2">
@@ -995,13 +967,11 @@ function ScoreboardWrap({ children, cls }) {
 function randomRoomCode() {
   const adj = ["loud", "epic", "fresh", "brave", "lucky", "gold", "neon", "vivid"];
   const noun = ["eurovision", "contest", "party", "song", "final", "semifinal"];
-  return `${adj[Math.floor(Math.random() * adj.length)]}-${noun[Math.floor(Math.random() * noun.length)]}-${Math.floor(
-    Math.random() * 1000
-  )}`;
+  return `${adj[Math.floor(Math.random() * adj.length)]}-${noun[Math.floor(Math.random() * noun.length)]}-${Math.floor(Math.random() * 1000)}`;
 }
 
-/** Итоги по всем песням — по средним (1 знак). Показываем мини-аватар автора голоса? (не требуется) */
-function Scoreboard({ db, roomId, criteria, participants }) {
+/* Итоги по всем песням */
+function Scoreboard({ db, roomId, criteria }) {
   const [rows, setRows] = useState([]);
   const votesUnsubsRef = useRef({});
 
@@ -1041,7 +1011,6 @@ function Scoreboard({ db, roomId, criteria, participants }) {
           votesUnsubsRef.current[song.id] = unsubVotes;
         });
 
-        // чистим снятые песни
         const existingIds = new Set(songs.map((s) => s.id));
         Object.entries(votesUnsubsRef.current).forEach(([songId, unsub]) => {
           if (!existingIds.has(songId)) {
